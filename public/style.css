@@ -5,6 +5,11 @@ body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;b
 a{color:var(--brand);text-decoration:none}
 .muted{color:var(--muted)}.grow{flex:1}.right{text-align:right}.center{text-align:center}
 .brand{font-size:22px;font-weight:800;color:#fff;padding:18px 20px}.brand span{color:#818cf8}.brand .cname{font-size:19px;line-height:1.25;word-break:break-word}.brand small{display:block;font-size:11px;font-weight:500;color:#9aa3b5;margin-top:2px}
+.brand.co{display:flex;align-items:center;gap:10px}.brand.co .cmeta{min-width:0}
+.clogo{display:inline-block;object-fit:contain;border-radius:8px;background:#fff;flex-shrink:0;vertical-align:middle}
+.clogo.lg{width:44px;height:44px;padding:3px}.clogo.sm{width:28px;height:28px;padding:2px}.clogo.md{width:44px;height:44px}
+.clogo.ph{display:inline-grid;place-items:center;background:var(--brand2);font-size:15px}
+#banner{display:flex;align-items:center;gap:8px}
 .brand.big{color:var(--ink);font-size:32px;padding:0 0 4px}
 #app{display:flex;min-height:100vh}
 #sidebar{width:230px;background:var(--side);position:sticky;top:0;height:100vh;overflow:auto;flex-shrink:0}

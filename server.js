@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { all, get, run, tx, hash, verify, M, ctx, inCompany, dropTenant, deleteTenant, tenantExists, IS_PG, queries } = require('./db');
 const AE = require('./attendance-engine');
+const CO_COLS = 'id,code,name,db_file,status,created,admin_email,emp_prefix,logo_v';   // everything except the (large) logo image
 const { seedDemo, seedBasics, normalizeRoles, ensureLeaveTypes, PERMS } = require('./seed');
 
 const PORT = process.env.PORT || 3000;
@@ -168,8 +169,8 @@ route('POST', '/api/login', ({ body }) => {
     return { token, user: { id: m.id, name: m.name, email: m.email, role: 'master' } };
   }
   let c;
-  if (portal === 'admin') c = M.get('SELECT * FROM companies WHERE lower(admin_email)=lower(?)', id);
-  else if (portal === 'employee') { const m = /^([A-Za-z]+)(\d+)$/.exec(id); c = m && M.get('SELECT * FROM companies WHERE upper(emp_prefix)=upper(?)', m[1]); }
+  if (portal === 'admin') c = M.get('SELECT ' + CO_COLS + ' FROM companies WHERE lower(admin_email)=lower(?)', id);
+  else if (portal === 'employee') { const m = /^([A-Za-z]+)(\d+)$/.exec(id); c = m && M.get('SELECT ' + CO_COLS + ' FROM companies WHERE upper(emp_prefix)=upper(?)', m[1]); }
   else bad('Unknown login portal');
   if (!c) fail();
   return inCompany(c, () => {
@@ -178,13 +179,13 @@ route('POST', '/api/login', ({ body }) => {
     if (c.status !== 'active') fail('This company account is suspended. Contact the platform owner.', 403);
     if (e.status === 'exited') fail('This account has been deactivated', 403);
     M.run('INSERT INTO sessions(token,company_id,emp_id,created) VALUES(?,?,?,?)', token, c.id, e.id, now); fails.delete(key);
-    return { token, user: publicEmp(e), company: { name: c.name, code: c.code } };
+    return { token, user: publicEmp(e), company: { name: c.name, code: c.code, logo_v: c.logo_v || null } };
   });
 }, { public: true });
 route('POST', '/api/logout', ({ token }) => { M.run('DELETE FROM sessions WHERE token=?', token); return { ok: true }; }, { any: true });
 route('GET', '/api/me', ({ user }) => {
   if (user.role === 'master') return user;
-  const c = ctx().company; return { ...publicEmp(get(EMP_SQL + ' WHERE e.id=?', user.id)), company: { name: c.name, code: c.code } };
+  const c = ctx().company; return { ...publicEmp(get(EMP_SQL + ' WHERE e.id=?', user.id)), company: { name: c.name, code: c.code, logo_v: c.logo_v || null } };
 }, { any: true });
 route('POST', '/api/change-password', ({ user, body }) => {
   req_(body, 'current', 'next');
@@ -896,11 +897,29 @@ route('POST', '/api/expenses/company', ({ user, body }) => {
 // ---------- master panel ----------
 const CODE_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
 const mroute = (m, p, h) => route(m, p, h, { master: true });
-const company_ = id => M.get('SELECT * FROM companies WHERE id=?', id) || bad('Company not found', 404);
+// Company logo: a small image stored as a data URL (the browser shrinks it to <=256px before upload).
+function cleanLogo(l) {
+  if (l === undefined || l === null || l === '') return null;
+  if (typeof l !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(l)) bad('Logo must be a PNG, JPG or WebP image');
+  if (l.length > 600000) bad('Logo image is too large (keep it under about 400 KB)');
+  return l;
+}
+route('GET', '/api/logo/:code', ({ params }) => {
+  const row = M.get('SELECT logo FROM companies WHERE code=?', String(params.code).toLowerCase());
+  const m = row?.logo && /^data:(image\/\w+);base64,(.+)$/.exec(row.logo);
+  if (!m) bad('No logo', 404);
+  return { __raw: { type: m[1], buf: Buffer.from(m[2], 'base64') } };
+}, { public: true });
+mroute('POST', '/api/master/companies/:id/logo', ({ params, body }) => {
+  const c = company_(params.id), logo = cleanLogo(body.logo);
+  M.run('UPDATE companies SET logo=?, logo_v=? WHERE id=?', logo, logo ? String(Date.now()) : null, c.id);
+  return { ok: true };
+});
+const company_ = id => M.get('SELECT ' + CO_COLS + ' FROM companies WHERE id=?', id) || bad('Company not found', 404);
 const pub_ = c => { const { db_file, ...r } = c; return r; };
 const adminsOf = c => inCompany(c, () => all("SELECT id,emp_code,name,email,status FROM employees WHERE role='admin' ORDER BY id"));
 
-mroute('GET', '/api/master/companies', () => M.all('SELECT * FROM companies ORDER BY id').map(c => inCompany(c, () => ({ ...pub_(c),
+mroute('GET', '/api/master/companies', () => M.all('SELECT ' + CO_COLS + ' FROM companies ORDER BY id').map(c => inCompany(c, () => ({ ...pub_(c),
   employees: get("SELECT COUNT(*) c FROM employees WHERE status!='exited'").c, admins: get("SELECT COUNT(*) c FROM employees WHERE role='admin' AND status!='exited'").c }))));
 mroute('POST', '/api/master/companies', ({ user, body }) => {
   confirmPw(user, body);
@@ -913,9 +932,10 @@ mroute('POST', '/api/master/companies', ({ user, body }) => {
   if (!/^[A-Z]{2,6}$/.test(prefix)) bad('Employee ID prefix must be 2-6 letters (e.g. ACME)');
   if (M.get('SELECT id FROM companies WHERE upper(emp_prefix)=?', prefix)) bad('That employee ID prefix is already used by another company');
   if (M.get('SELECT id FROM companies WHERE lower(admin_email)=lower(?)', body.admin_email)) bad('That admin email already belongs to another company');
+  const logo = cleanLogo(body.logo);
   const file = code + '.db';
   if (tenantExists(file)) bad('Data for this company code already exists; choose another code');
-  const id = M.run('INSERT INTO companies(code,name,db_file,created,admin_email,emp_prefix) VALUES(?,?,?,?,?,?)', code, body.name.trim(), file, todayStr(), body.admin_email.trim(), prefix).lastInsertRowid;
+  const id = M.run('INSERT INTO companies(code,name,db_file,created,admin_email,emp_prefix,logo,logo_v) VALUES(?,?,?,?,?,?,?,?)', code, body.name.trim(), file, todayStr(), body.admin_email.trim(), prefix, logo, logo ? String(Date.now()) : null).lastInsertRowid;
   const c = company_(id);
   try {
     inCompany(c, () => {
@@ -954,7 +974,7 @@ mroute('POST', '/api/master/companies/:id/impersonate', ({ params, body }) => {
     if (!e) bad('No active admin in this company');
     const token = crypto.randomBytes(24).toString('hex');
     M.run('INSERT INTO sessions(token,company_id,emp_id,created) VALUES(?,?,?,?)', token, c.id, e.id, new Date().toISOString());
-    return { token, user: publicEmp(e), company: { name: c.name, code: c.code } };
+    return { token, user: publicEmp(e), company: { name: c.name, code: c.code, logo_v: c.logo_v || null } };
   });
 });
 mroute('POST', '/api/master/companies/:id/employees', ({ user, params, body }) => {
@@ -986,7 +1006,7 @@ const SEED_DEMO = process.env.SEED_DEMO === '1' || (process.env.SEED_DEMO !== '0
 if (!M.get('SELECT id FROM companies') && SEED_DEMO) {
   const legacy = path.join(__dirname, 'hellohr.db');
   if (!IS_PG && fs.existsSync(legacy)) M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company',?,?)", legacy, todayStr());
-  else { M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company','demo.db',?)", todayStr()); inCompany(M.get("SELECT * FROM companies WHERE code='demo'"), seedDemo); }
+  else { M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company','demo.db',?)", todayStr()); inCompany(M.get("SELECT " + CO_COLS + " FROM companies WHERE code='demo'"), seedDemo); }
 }
 
 for (const c of M.all('SELECT * FROM companies WHERE admin_email IS NULL OR emp_prefix IS NULL')) {
@@ -995,7 +1015,7 @@ for (const c of M.all('SELECT * FROM companies WHERE admin_email IS NULL OR emp_
   M.run('UPDATE companies SET admin_email=COALESCE(admin_email,?), emp_prefix=COALESCE(emp_prefix,?) WHERE id=?', a?.email, pre, c.id);
 }
 
-for (const c of M.all('SELECT * FROM companies')) inCompany(c, () => { normalizeRoles(); ensureLeaveTypes(); });
+for (const c of M.all('SELECT ' + CO_COLS + ' FROM companies')) inCompany(c, () => { normalizeRoles(); ensureLeaveTypes(); });
 
 // ---------- server ----------
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' };
@@ -1004,7 +1024,10 @@ const handler = (req, res) => {
   if (process.env.HH_DEBUG) { const q0 = queries(), t0 = Date.now(); res.on('finish', () => console.log(`${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${queries() - q0} db-queries ${Date.now() - t0}ms`)); }
   res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'SAMEORIGIN'); res.setHeader('Referrer-Policy', 'same-origin');
   const url = new URL(req.url, 'http://x');
-  const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+  const send = (code, obj) => {
+    if (obj && obj.__raw) { res.writeHead(code, { 'Content-Type': obj.__raw.type, 'Cache-Control': 'public, max-age=86400' }); return res.end(obj.__raw.buf); }
+    res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj));
+  };
 
   if (!url.pathname.startsWith('/api/')) {
     let f = path.normalize(path.join(PUB, url.pathname === '/' ? 'index.html' : url.pathname));
@@ -1034,7 +1057,7 @@ const handler = (req, res) => {
           return send(200, r.handler({ user: { ...m, role: 'master' }, params, body, query, token }));
         }
         if (r.master) return send(403, { error: 'Forbidden' });
-        const c = M.get('SELECT * FROM companies WHERE id=?', s.company_id);
+        const c = M.get('SELECT ' + CO_COLS + ' FROM companies WHERE id=?', s.company_id);
         if (!c || c.status !== 'active') return send(401, { error: 'Please sign in' });
         return send(200, inCompany(c, () => {
           user = get("SELECT * FROM employees WHERE id=? AND status!='exited'", s.emp_id);

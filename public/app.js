@@ -140,6 +140,19 @@ function labelTables(root) {
     t.classList.add('rtable'); t.querySelectorAll('tbody tr').forEach(tr => [...tr.children].forEach((td, i) => { td.setAttribute('data-label', hs[i] || ''); if (td.childNodes.length > 1 && !td.querySelector(':scope > .cell')) td.innerHTML = '<div class="cell">' + td.innerHTML + '</div>'; }));
   });
 }
+// Shrinks a chosen picture to at most 256px and returns it as a data URL (kept small so it loads fast on every page).
+async function logoFromFile(file) {
+  if (!file) return null;
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('The logo must be a PNG, JPG or WebP image');
+  if (file.size > 5e6) throw new Error('That image is too large (max 5 MB)');
+  const url = URL.createObjectURL(file);
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('Could not read that image')); i.src = url; });
+  const k = Math.min(1, 256 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+  return c.toDataURL(file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.9);
+}
+const logoImg = (co, cls = '') => co && co.logo_v ? `<img class="clogo ${cls}" alt="" src="/api/logo/${encodeURIComponent(co.code)}?v=${encodeURIComponent(co.logo_v)}">` : '';
 function closeModal() { $('#modalRoot').innerHTML = ''; }
 function modal(html, wide) {
   $('#modalRoot').innerHTML = `<div class="overlay"><div class="modal ${wide ? 'wide' : ''}">${html}</div></div>`;
@@ -153,6 +166,7 @@ function fieldHtml(f) {
 function fieldHtml0(f) {
   const v = f.value ?? '', req = f.required ? 'required' : '', n = `name="${f.name}"`;
   let inp;
+  if (f.type === 'file') return `<label class="${f.full ? 'full' : ''}">${esc(f.label)}<input ${n} type="file" accept="${f.accept || 'image/png,image/jpeg,image/webp'}"></label>`;
   if (f.type === 'checks') return `<fieldset class="perms full"><legend>${esc(f.label)}</legend>${f.options.map(([k, l, d]) => `<label class="perm"><input type="checkbox" name="${f.name}" value="${k}" ${(v || []).includes(k) ? 'checked' : ''}><span><b>${esc(l)}</b><small class="muted">${esc(d)}</small></span></label>`).join('')}</fieldset>`;
   if (f.type === 'select') inp = `<select ${n} ${req}>${opts(f.options || [], v, f.blank)}</select>`;
   else if (f.type === 'textarea') inp = `<textarea ${n} rows="3" ${req}>${esc(v)}</textarea>`;
@@ -167,7 +181,7 @@ function openForm({ title, fields, submit = 'Save', onSubmit, wide, intro }) {
   mf.addEventListener('change', sync); sync();
   $('#mf').addEventListener('submit', async e => {
     e.preventDefault(); const vals = {};
-    for (const f of fields) { if (f.type === 'checks') { vals[f.name] = [...e.target.querySelectorAll(`input[name="${f.name}"]:checked`)].map(x => x.value); continue; } const el = e.target.elements[f.name]; vals[f.name] = f.type === 'checkbox' ? el.checked : el.value; }
+    for (const f of fields) { if (f.type === 'checks') { vals[f.name] = [...e.target.querySelectorAll(`input[name="${f.name}"]:checked`)].map(x => x.value); continue; } const el = e.target.elements[f.name]; vals[f.name] = f.type === 'checkbox' ? el.checked : f.type === 'file' ? (el.files[0] || null) : el.value; }
     try { await onSubmit(vals); closeModal(); route(); } catch (err) { $('#mfErr').textContent = err.message; }
   });
 }
@@ -387,7 +401,7 @@ PAGES.leave = async () => {
 };
 
 // ---- payroll ----
-const slipHtml = p => `<div class="slip"><h2 style="margin:0">HelloHR Pvt. Ltd.</h2><div class="muted">Payslip for ${monthName(p.month)}</div><hr>
+const slipHtml = p => `<div class="slip"><div style="display:flex;align-items:center;gap:10px">${logoImg(S.user.company, 'md')}<h2 style="margin:0">${esc(S.user.company?.name || 'Company')}</h2></div><div class="muted">Payslip for ${monthName(p.month)}</div><hr>
   <div class="grid g2"><dl class="kv"><dt>Employee</dt><dd><b>${esc(p.name)}</b></dd><dt>Emp ID</dt><dd>${esc(p.emp_code)}</dd><dt>Designation</dt><dd>${esc(p.designation)}</dd><dt>Department</dt><dd>${esc(p.dept || '—')}</dd></dl>
   <dl class="kv"><dt>PAN</dt><dd>${esc(p.pan || '—')}</dd><dt>Bank a/c</dt><dd>${esc(p.bank_account || '—')}</dd><dt>Working days</dt><dd>${p.working_days}</dd><dt>Paid days</dt><dd>${p.paid_days} <span class="muted">(LOP ${p.lop_days})</span></dd></dl></div>
   <div class="grid g2"><div><h3>Earnings</h3><table><tr><td>Basic</td><td class="right">${inr(p.basic)}</td></tr><tr><td>HRA</td><td class="right">${inr(p.hra)}</td></tr><tr><td>Special allowance</td><td class="right">${inr(p.special)}</td></tr>${p.reimbursements ? `<tr><td>Reimbursements</td><td class="right">${inr(p.reimbursements)}</td></tr>` : ''}<tr><th>Gross</th><th class="right">${inr(p.gross)}</th></tr></table></div>
@@ -606,8 +620,8 @@ MPAGES.companies = async () => {
   const stat = (n, l) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   return head('Companies', 'Every company has its own isolated database, admin and employees', '<button class="btn" data-act="masterAddEmp">+ Add employee</button> <button class="btn primary" data-act="addCompany">+ New company</button>') +
     `<div class="grid g4" style="margin-bottom:16px">${stat(cs.length, 'Companies')}${stat(cs.filter(c => c.status === 'active').length, 'Active')}${stat(cs.filter(c => c.status !== 'active').length, 'Suspended')}${stat(cs.reduce((s, c) => s + c.employees, 0), 'Total employees')}</div>
-    <div class="card">${table([{ h: 'Company', f: c => `<b>${esc(c.name)}</b>` }, { h: 'Admin login', f: c => esc(c.admin_email) }, { h: 'ID prefix', f: c => `<code>${esc(c.emp_prefix)}</code>` }, { h: 'Employees', f: c => c.employees }, { h: 'Admins', f: c => c.admins }, { h: 'Created', f: c => fd(c.created) }, { h: 'Status', f: c => badge(c.status === 'active' ? 'active' : 'rejected').replace('>rejected<', '>suspended<') },
-      { h: '', f: c => `<button class="btn sm" data-act="resetAdmin" data-id="${c.id}">Reset admin password</button> <button class="btn sm primary" data-act="loginAs" data-id="${c.id}" ${c.status !== 'active' ? 'disabled' : ''}>Open portal</button> <button class="btn sm" data-act="renameCo" data-id="${c.id}">Rename</button>
+    <div class="card">${table([{ h: 'Company', f: c => `<span style="display:flex;align-items:center;gap:8px">${c.logo_v ? logoImg(c, 'sm') : '<span class="clogo sm ph">🏢</span>'}<b>${esc(c.name)}</b></span>` }, { h: 'Admin login', f: c => esc(c.admin_email) }, { h: 'ID prefix', f: c => `<code>${esc(c.emp_prefix)}</code>` }, { h: 'Employees', f: c => c.employees }, { h: 'Admins', f: c => c.admins }, { h: 'Created', f: c => fd(c.created) }, { h: 'Status', f: c => badge(c.status === 'active' ? 'active' : 'rejected').replace('>rejected<', '>suspended<') },
+      { h: '', f: c => `<button class="btn sm" data-act="resetAdmin" data-id="${c.id}">Reset admin password</button> <button class="btn sm primary" data-act="loginAs" data-id="${c.id}" ${c.status !== 'active' ? 'disabled' : ''}>Open portal</button> <button class="btn sm" data-act="changeLogo" data-id="${c.id}">Logo</button> <button class="btn sm" data-act="renameCo" data-id="${c.id}">Rename</button>
         <button class="btn sm" data-act="toggleCo" data-id="${c.id}">${c.status === 'active' ? 'Suspend' : 'Activate'}</button> <button class="btn sm danger" data-act="deleteCo" data-id="${c.id}">Delete</button>` }], cs, 'No companies yet. Create the first one.')}</div>
     <p class="muted">Each company has exactly one admin, created only here. The admin signs in at <code>/admin</code> with email + password; HR, managers and employees sign in at <code>/</code> with Employee ID + password.</p>`;
 };
@@ -628,12 +642,14 @@ const MASTER_ACTIONS = {
   addCompany: () => openForm({ title: 'Create company', wide: true, intro: 'This creates a separate database for the company plus its first admin account.', submit: 'Create company', fields: [
     { name: 'name', label: 'Company name', required: true }, { name: 'code', label: 'Short code (lowercase, e.g. acme)', required: true }, { name: 'emp_prefix', label: 'Employee ID prefix (2-6 letters, e.g. ACME → ACME001)' },
     { name: 'admin_name', label: 'Admin name', required: true }, { name: 'admin_email', label: 'Admin login email (unique across all companies)', type: 'email', required: true },
-    { name: 'admin_password', label: 'Admin password (min 6)', required: true }, { name: 'sample_data', label: 'Fill with sample employees & data (for trying it out)', type: 'checkbox' }, PW],
-    onSubmit: async v => { await api('POST', '/api/master/companies', v); toast(`Company created. The admin signs in at /admin with ${v.admin_email}`); } }),
+    { name: 'admin_password', label: 'Admin password (min 6)', required: true }, { name: 'logo', label: 'Company logo (PNG / JPG, optional — shown in the header of the admin and employee portals)', type: 'file', full: true }, { name: 'sample_data', label: 'Fill with sample employees & data (for trying it out)', type: 'checkbox' }, PW],
+    onSubmit: async v => { v.logo = await logoFromFile(v.logo); await api('POST', '/api/master/companies', v); toast(`Company created. The admin signs in at /admin with ${v.admin_email}`); } }),
   resetAdmin: async id => {
     const [ad] = await api('GET', `/api/master/companies/${id}/admins`);
     openForm({ title: 'Reset password for ' + ad.name, intro: esc(ad.email), fields: [{ name: 'password', label: 'New password (min 6)', required: true }, PW], onSubmit: async v => { await api('POST', `/api/master/companies/${id}/admins/${ad.id}/reset`, v); toast('Password reset'); } });
   },
+  changeLogo: id => openForm({ title: 'Company logo', intro: 'Shown in the header of that company\'s admin and employee portals.', submit: 'Save logo', fields: [{ name: 'logo', label: 'New logo (PNG / JPG / WebP)', type: 'file', full: true }, { name: 'remove', label: 'Remove the current logo instead', type: 'checkbox', full: true }],
+    onSubmit: async v => { const logo = v.remove ? null : await logoFromFile(v.logo); if (!v.remove && !logo) throw new Error('Choose an image first'); await api('POST', `/api/master/companies/${id}/logo`, { logo }); toast('Logo updated'); } }),
   renameCo: id => openForm({ title: 'Rename company', fields: [{ name: 'name', label: 'Name', required: true, value: S._cos.find(x => x.id == id).name }], onSubmit: v => api('POST', `/api/master/companies/${id}/rename`, v) }),
   toggleCo: id => { const c = S._cos.find(x => x.id == id), to = c.status === 'active' ? 'suspended' : 'active'; confirmBox(to === 'suspended' ? `Suspend ${c.name}? All their users are signed out and cannot log in.` : `Re-activate ${c.name}?`, () => api('POST', `/api/master/companies/${id}/status`, { status: to })); },
   deleteCo: id => { const c = S._cos.find(x => x.id == id); openForm({ title: 'Delete company permanently', intro: `This erases <b>all data</b> of ${esc(c.name)} and cannot be undone. Type <code>${esc(c.code)}</code> to confirm.`, submit: 'Delete forever', fields: [{ name: 'confirm', label: 'Company code', required: true }, PW], onSubmit: v => api('DELETE', `/api/master/companies/${id}`, v) }); },
@@ -654,8 +670,10 @@ function buildNav() {
   // Portal title = the company's name (for that company's admin and employees); the master panel keeps the platform name.
   const co = S.user.company;
   document.title = co ? co.name + ' · HR Portal' : isMaster() ? 'HelloHR · Master panel' : 'HelloHR';
-  $('#sidebar .brand').innerHTML = co ? '<div class="cname">' + esc(co.name) + '</div><small>HR Portal</small>' : 'Hello<span>HR</span><small>' + (isMaster() ? 'Master panel' : 'HR Portal') + '</small>';
-  $('#banner').innerHTML = localStorage.getItem('hh_master_token') ? '<button class="btn sm danger" data-act="backToMaster">← Back to master panel</button>' : (S.user.company ? '<b>' + esc(S.user.company.name) + '</b>' : '<b>Platform master panel</b>');
+  $('#sidebar .brand').className = 'brand' + (co ? ' co' : '');
+  $('#sidebar .brand').innerHTML = co ? logoImg(co, 'lg') + '<div class="cmeta"><div class="cname">' + esc(co.name) + '</div><small>HR Portal</small></div>' : 'Hello<span>HR</span><small>' + (isMaster() ? 'Master panel' : 'HR Portal') + '</small>';
+  { let fav = document.querySelector('link[rel=icon]'); if (!fav) { fav = document.createElement('link'); fav.rel = 'icon'; document.head.appendChild(fav); } fav.href = co && co.logo_v ? `/api/logo/${encodeURIComponent(co.code)}?v=${co.logo_v}` : 'data:,'; }
+  $('#banner').innerHTML = localStorage.getItem('hh_master_token') ? '<button class="btn sm danger" data-act="backToMaster">← Back to master panel</button>' : (S.user.company ? logoImg(S.user.company, 'sm') + '<b>' + esc(S.user.company.name) + '</b>' : '<b>Platform master panel</b>');
   if (isMaster()) { $('#nav').innerHTML = '<div class="sec">Platform</div><a href="#/companies" data-nav="companies">🏢 Companies</a><a href="#/maccount" data-nav="maccount">🔐 My account</a>'; $('#userbox').innerHTML = '<div style="text-align:right"><b>' + esc(S.user.name) + '</b><br><small class="muted">MASTER</small></div><button class="btn sm" data-act="logout">Sign out</button>'; return; }
   $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['leave', 'learning'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
   $('#userbox').innerHTML = `<div style="text-align:right"><b>${esc(S.user.name)}</b><br><small class="muted">${esc(S.user.role.toUpperCase())} · ${esc(S.user.emp_code)}</small></div><a href="#/profile" class="avatar" title="My account">${initials(S.user.name)}</a><button class="btn sm" data-act="logout">Sign out</button>`;

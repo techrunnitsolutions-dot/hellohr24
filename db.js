@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS enrollments(id INTEGER PRIMARY KEY, emp_id INTEGER, c
 `;
 const MASTER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS masters(id INTEGER PRIMARY KEY, name TEXT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, db_file TEXT NOT NULL, status TEXT DEFAULT 'active', created TEXT, admin_email TEXT, emp_prefix TEXT);
+CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, db_file TEXT NOT NULL, status TEXT DEFAULT 'active', created TEXT, admin_email TEXT, emp_prefix TEXT, logo TEXT, logo_v TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, company_id INTEGER, emp_id INTEGER, master_id INTEGER, created TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_co_admin ON companies(lower(admin_email));
 CREATE UNIQUE INDEX IF NOT EXISTS ux_co_prefix ON companies(upper(emp_prefix));
@@ -160,6 +160,7 @@ const tenants = new Map();
 
 if (IS_PG) {
   pgEnsureSchema('public', MASTER_SCHEMA);
+  pgCall('ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS logo TEXT; ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS logo_v TEXT;', [], true);
   master = pgHandle('public', MASTER_TABLES);
   tenantDb = file => {
     if (!tenants.has(file)) { const s = schemaOf(file); pgEnsureSchema(s, SCHEMA); tenants.set(file, pgHandle(s, TENANT_TABLES)); }
@@ -174,8 +175,8 @@ if (IS_PG) {
   const open = (file, schema) => { const d = new DatabaseSync(file); d.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;'); d.exec(schema); return d; };
   const columns = (db, table) => db.prepare('PRAGMA table_info(' + table + ')').all().map(c => c.name);
   const ensure = (db, table, cols) => { const have = columns(db, table); for (const [c, type] of Object.entries(cols)) if (!have.includes(c)) db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + c + ' ' + type); };
-  master = open(path.join(process.env.DATA_DIR ? DATA : __dirname, 'master.db'), MASTER_SCHEMA.replace(/, admin_email TEXT, emp_prefix TEXT/, '').replace(/CREATE UNIQUE INDEX[^\n]*\n/g, ''));
-  ensure(master, 'companies', { admin_email: 'TEXT', emp_prefix: 'TEXT' });
+  master = open(path.join(process.env.DATA_DIR ? DATA : __dirname, 'master.db'), MASTER_SCHEMA.replace(/, admin_email TEXT, emp_prefix TEXT, logo TEXT, logo_v TEXT/, '').replace(/CREATE UNIQUE INDEX[^\n]*\n/g, ''));
+  ensure(master, 'companies', { admin_email: 'TEXT', emp_prefix: 'TEXT', logo: 'TEXT', logo_v: 'TEXT' });
   master.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_co_admin ON companies(lower(admin_email)); CREATE UNIQUE INDEX IF NOT EXISTS ux_co_prefix ON companies(upper(emp_prefix));');
   tenantDb = file => {
     if (!tenants.has(file)) {
