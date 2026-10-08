@@ -904,11 +904,12 @@ function cleanLogo(l) {
   if (l.length > 600000) bad('Logo image is too large (keep it under about 400 KB)');
   return l;
 }
-route('GET', '/api/logo/:code', ({ params }) => {
+route('GET', '/api/logo/:code', ({ params, query }) => {
   const row = M.get('SELECT logo FROM companies WHERE code=?', String(params.code).toLowerCase());
   const m = row?.logo && /^data:(image\/\w+);base64,(.+)$/.exec(row.logo);
   if (!m) bad('No logo', 404);
-  return { __raw: { type: m[1], buf: Buffer.from(m[2], 'base64') } };
+  // versioned URLs (?v=<logo_v>, which the app always uses) can be cached forever; a bare URL must always be re-checked
+  return { __raw: { type: m[1], buf: Buffer.from(m[2], 'base64'), cache: query.v ? 'public, max-age=31536000, immutable' : 'no-cache' } };
 }, { public: true });
 mroute('POST', '/api/master/companies/:id/logo', ({ params, body }) => {
   const c = company_(params.id), logo = cleanLogo(body.logo);
@@ -1025,7 +1026,7 @@ const handler = (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'SAMEORIGIN'); res.setHeader('Referrer-Policy', 'same-origin');
   const url = new URL(req.url, 'http://x');
   const send = (code, obj) => {
-    if (obj && obj.__raw) { res.writeHead(code, { 'Content-Type': obj.__raw.type, 'Cache-Control': 'public, max-age=86400' }); return res.end(obj.__raw.buf); }
+    if (obj && obj.__raw) { res.writeHead(code, { 'Content-Type': obj.__raw.type, 'Cache-Control': obj.__raw.cache || 'no-cache' }); return res.end(obj.__raw.buf); }
     res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj));
   };
 
