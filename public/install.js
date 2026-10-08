@@ -32,7 +32,17 @@
   // iOS: Apple gives websites no way to add themselves, so show a short picture guide with an arrow pointing at Safari's Share button
   const SHARE_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M5 11v8a2 2 0 002 2h10a2 2 0 002-2v-8"/></svg>';
   const PLUS_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
+  // iPhone / iPad in Safari: ask permission, then download the Web Clip profile; afterwards show the two Settings taps. Anything else gets the manual guide.
   function ios() {
+    if (standalone) return toast('You are already using the app');
+    const ua = navigator.userAgent, ok = (/iPhone|iPod|iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram|Line/.test(ua);
+    if (!ok) return iosGuide();
+    ask('Add the HelloHR app to your home screen?', '<p class="muted" style="margin-top:0">This downloads a small <b>profile</b> that puts the HelloHR icon on your home screen. It changes nothing else on your phone. iPhone shows it as <b>Not Signed</b> because it is not from the App Store; that is expected.</p>', () => {
+      const a = document.createElement('a'); a.href = '/downloads/HelloHR.mobileconfig'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => box('<h2>One more step</h2><ol><li>Tap <b>Allow</b> if Safari asks to download the profile.</li><li>Open <b>Settings</b> and tap <b>Profile Downloaded</b> near the top (or <b>General → VPN &amp; Device Management</b>).</li><li>Tap <b>Install</b> (top right), enter your passcode, then <b>Install</b> again.</li><li>The <b>HelloHR</b> icon is now on your home screen.</li></ol><p class="muted">Prefer not to? <a href="#" data-x="guide">Add it manually instead</a>.</p>'), 600);
+    });
+  }
+  function iosGuide() {
     if (standalone) return toast('You are already using the app');
     const ua = navigator.userAgent, ipad = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1), safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram|Line/.test(ua), iphoneOrIpad = /iPhone|iPod/.test(ua) || ipad;
     const o = document.createElement('div'); o.className = 'appmodal ios-guide';
@@ -50,7 +60,7 @@
       if (e.target === o || x === 'ok') o.remove(); });
     document.body.appendChild(o);
   }
-  document.addEventListener('click', e => { const b = e.target.closest('[data-app]'); if (!b) return; e.preventDefault(); (b.dataset.app === 'ios' ? ios : android)(); });
+  document.addEventListener('click', e => { if (e.target.dataset && e.target.dataset.x === 'guide') { e.preventDefault(); const m = e.target.closest('.appmodal'); if (m) m.remove(); return iosGuide(); } const b = e.target.closest('[data-app]'); if (!b) return; e.preventDefault(); (b.dataset.app === 'ios' ? ios : android)(); });
   // the app is for employees: hide the buttons on the admin / master logins and inside the installed app
   addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appDownload'); if (el && (standalone || /^\/(admin|master)/.test(location.pathname))) el.remove(); });
 })();
