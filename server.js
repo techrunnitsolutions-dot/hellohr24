@@ -986,6 +986,14 @@ const FIELD_RULES = {
   passing_year: [v => /^(19|20)\d{2}$/.test(v), 'Passing year is not valid'],
 };
 function getProfile(empId) { const r = get('SELECT data FROM profiles WHERE emp_id=?', empId); try { return r ? JSON.parse(r.data) : {}; } catch { return {}; } }
+// what is already known about a person (saved profile + what the admin entered on the employee record), so nothing filled once shows up blank again
+const EMP_TO_PROFILE = { phone: 'phone', dob: 'dob', gender: 'gender', address: 'current_address', pan: 'pan_no', bank_account: 'bank_account_no' };
+function profileFields(empId, saved = getProfile(empId), e = get('SELECT name,phone,dob,gender,address,pan,bank_account FROM employees WHERE id=?', empId)) {
+  const out = { ...saved }; if (!e) return out;
+  for (const [col, key] of Object.entries(EMP_TO_PROFILE)) { const v = e[col] == null ? '' : String(e[col]).trim(); if (v && !(FIELD_RULES[key] && !FIELD_RULES[key][0](v))) out[key] = v; }
+  if (!out.full_name && e.name) out.full_name = e.name;
+  return out;
+}
 const docList = empId => all('SELECT id,doc_type,filename,mime,size,uploaded FROM documents WHERE emp_id=? ORDER BY doc_type,id', empId);
 // what the company needs on file; experience documents only count for "experienced" joiners
 function completion(f, docs) {
@@ -1001,12 +1009,13 @@ function completion(f, docs) {
 function profileCompletionMap() {
   const profs = Object.fromEntries(all('SELECT emp_id,data FROM profiles').map(r => { let d = {}; try { d = JSON.parse(r.data); } catch {} return [r.emp_id, d]; }));
   const docs = {}; for (const r of all('SELECT emp_id, doc_type FROM documents GROUP BY emp_id, doc_type')) (docs[r.emp_id] ||= []).push({ doc_type: r.doc_type });
-  return id => completion(profs[id] || {}, docs[id] || []).pct;
+  const emps = Object.fromEntries(all('SELECT id,name,phone,dob,gender,address,pan,bank_account FROM employees').map(r => [r.id, r]));
+  return id => completion(profileFields(id, profs[id] || {}, emps[id]), docs[id] || []).pct;
 }
 route('GET', '/api/profile', ({ user, query }) => {
   const id = +query.emp_id || user.id; need(id === user.id || can(user, 'employees'));
   const e = get('SELECT id,name,emp_code,email,designation,role FROM employees WHERE id=?', id); if (!e) bad('Not found', 404);
-  const fields = getProfile(id), docs = docList(id);
+  const fields = profileFields(id), docs = docList(id);
   return { employee: e, fields, docs, completion: completion(fields, docs), editable: id === user.id };
 });
 route('PUT', '/api/profile', ({ user, body }) => {
@@ -1016,7 +1025,7 @@ route('PUT', '/api/profile', ({ user, body }) => {
     if (v && FIELD_RULES[k] && !FIELD_RULES[k][0](v)) bad(FIELD_RULES[k][1]);
     f[k] = k === 'pan_no' || k === 'bank_ifsc' ? v.toUpperCase() : (k === 'aadhaar_no' ? digits(v) : v);
   }
-  const data = { ...getProfile(user.id), ...f };
+  const data = { ...profileFields(user.id), ...f };
   tx(() => {
     run('INSERT INTO profiles(emp_id,data,updated) VALUES(?,?,?) ON CONFLICT(emp_id) DO UPDATE SET data=excluded.data, updated=excluded.updated', user.id, JSON.stringify(data), todayStr());
     // keep the main employee record (used by payroll / payslips) in step
