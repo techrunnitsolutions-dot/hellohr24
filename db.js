@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS assets(id INTEGER PRIMARY KEY, name TEXT, tag TEXT UN
 CREATE TABLE IF NOT EXISTS announcements(id INTEGER PRIMARY KEY, title TEXT, body TEXT, author_id INTEGER, created TEXT);
 CREATE TABLE IF NOT EXISTS courses(id INTEGER PRIMARY KEY, title TEXT, description TEXT, duration TEXT, mandatory INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS enrollments(id INTEGER PRIMARY KEY, emp_id INTEGER, course_id INTEGER, progress INTEGER DEFAULT 0, UNIQUE(emp_id,course_id));
+CREATE TABLE IF NOT EXISTS profiles(emp_id INTEGER NOT NULL PRIMARY KEY, data TEXT, updated TEXT);
+CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY, emp_id INTEGER NOT NULL, doc_type TEXT NOT NULL, filename TEXT, mime TEXT, size INTEGER, data TEXT, uploaded TEXT);
+CREATE INDEX IF NOT EXISTS ix_documents ON documents(emp_id,doc_type);
 `;
 const MASTER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS masters(id INTEGER PRIMARY KEY, name TEXT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL);
@@ -110,11 +113,11 @@ CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, company_id INTEGER, 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_co_admin ON companies(lower(admin_email));
 CREATE UNIQUE INDEX IF NOT EXISTS ux_co_prefix ON companies(upper(emp_prefix));
 `;
-const TENANT_TABLES = ['departments', 'employees', 'attendance', 'punches', 'settings', 'requests', 'leave_types', 'leaves', 'holidays', 'payruns', 'payslips', 'jobs', 'candidates', 'checklists', 'goals', 'reviews', 'expenses', 'tickets', 'assets', 'announcements', 'courses', 'enrollments'];
+const TENANT_TABLES = ['departments', 'employees', 'attendance', 'punches', 'settings', 'requests', 'leave_types', 'leaves', 'holidays', 'payruns', 'payslips', 'jobs', 'candidates', 'checklists', 'goals', 'reviews', 'expenses', 'tickets', 'assets', 'announcements', 'courses', 'enrollments', 'profiles', 'documents'];
 const MASTER_TABLES = ['masters', 'companies', 'sessions'];
 
 // ================= SQLite -> Postgres translation =================
-const NO_ID = new Set(['settings', 'sessions']);
+const NO_ID = new Set(['settings', 'sessions', 'profiles']);
 const ddlToPg = ddl => ddl.replace(/INTEGER PRIMARY KEY/g, 'SERIAL PRIMARY KEY').replace(/\bREAL\b/g, 'DOUBLE PRECISION');
 const pgCache = new Map();
 function toPg(sql, schema, tables) {

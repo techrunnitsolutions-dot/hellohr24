@@ -10,6 +10,9 @@ a{color:var(--brand);text-decoration:none}
 .clogo.lg{width:44px;height:44px;padding:3px}.clogo.sm{width:28px;height:28px;padding:2px}.clogo.md{width:44px;height:44px}
 .clogo.ph{display:inline-grid;place-items:center;background:var(--brand2);font-size:15px}
 #banner{display:flex;align-items:center;gap:8px}
+.docslot{border:1px dashed var(--line);border-radius:10px;padding:10px 12px;background:#fcfcff}.docname{margin-bottom:6px}
+.docfile{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0;font-size:13px;word-break:break-all}
+.uploadbtn{cursor:pointer;margin-top:6px}
 .brand.big{color:var(--ink);font-size:32px;padding:0 0 4px}
 #app{display:flex;min-height:100vh}
 #sidebar{width:230px;background:var(--side);position:sticky;top:0;height:100vh;overflow:auto;flex-shrink:0}

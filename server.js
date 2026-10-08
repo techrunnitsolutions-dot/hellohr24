@@ -185,7 +185,7 @@ route('POST', '/api/login', ({ body }) => {
 route('POST', '/api/logout', ({ token }) => { M.run('DELETE FROM sessions WHERE token=?', token); return { ok: true }; }, { any: true });
 route('GET', '/api/me', ({ user }) => {
   if (user.role === 'master') return user;
-  const c = ctx().company; return { ...publicEmp(get(EMP_SQL + ' WHERE e.id=?', user.id)), company: { name: c.name, code: c.code, logo_v: c.logo_v || null } };
+  const c = ctx().company; return { ...publicEmp(get(EMP_SQL + ' WHERE e.id=?', user.id)), photo_id: get("SELECT id FROM documents WHERE emp_id=? AND doc_type='profile_photo'", user.id)?.id || null, company: { name: c.name, code: c.code, logo_v: c.logo_v || null } };
 }, { any: true });
 route('POST', '/api/change-password', ({ user, body }) => {
   req_(body, 'current', 'next');
@@ -209,6 +209,7 @@ route('GET', '/api/dashboard', ({ user }) => {
   { const pu = buildPunch(user.id); out.punch = pu; out.today = pu.first_in ? { status: toStored(pu.status), check_in: pu.first_in, check_out: pu.last_out } : null; out.monthSummary = pu.month; }
   out.balances = leaveBalance(user.id);
   out.pendingRequests = reviewableRequests(user).filter(r => r.status === 'pending').length;
+  if (user.role !== 'admin') out.profilePct = completion(getProfile(user.id), docList(user.id)).pct;
   out.policies = { attendance: attCfg(), leaveTypes: all('SELECT name,days_per_year,is_paid,kind FROM leave_types ORDER BY id') };
   out.birthdays = all(`SELECT name, dob FROM employees WHERE status!='exited' AND dob IS NOT NULL AND substr(dob,6,2)=?`, today.slice(5, 7));
   out.myGoals = all("SELECT * FROM goals WHERE emp_id=? AND status='active'", user.id);
@@ -250,9 +251,10 @@ function shape(user, e, team) {
 }
 route('GET', '/api/employees', ({ user, query }) => {
   const team = new Set(teamIds(user));
-  const live = can(user, 'attendance'), cfg = live && attCfg(), work = isWorkday(todayStr(), holidaySet());
+  const live = can(user, 'attendance'), cfg = live && attCfg(), work = isWorkday(todayStr(), holidaySet()), profPct = can(user, 'employees') ? profileCompletionMap() : null;
   return all(EMP_SQL + ' ORDER BY e.emp_code').map(publicEmp).map(e => shape(user, e, team)).filter(e => !query.status || e.status === query.status)
-    .map(e => live && e.status !== 'exited' && e.role !== 'admin' ? { ...e, today: dayStatus(e.id, todayStr(), cfg, work) } : e);
+    .map(e => live && e.status !== 'exited' && e.role !== 'admin' ? { ...e, today: dayStatus(e.id, todayStr(), cfg, work) } : e)
+    .map(e => profPct ? { ...e, profile_pct: profPct(e.id) } : e);
 });
 route('GET', '/api/employees/:id', ({ user, params }) => {
   const e = get(EMP_SQL + ' WHERE e.id=?', params.id); if (!e) bad('Not found', 404);
@@ -695,7 +697,7 @@ const parseReq = r => ({ ...r, payload: JSON.parse(r.payload || '{}') });
 function reviewableRequests(user) {
   const broad = can(user, 'onboarding') || can(user, 'employees'), team = new Set(teamIds(user));
   if (!broad && !team.size) return [];
-  return all(REQ_SQL + " ORDER BY (r.status='pending') DESC, r.id DESC").filter(r => r.emp_id !== user.id && (broad || team.has(r.emp_id))).map(parseReq);
+  return all(REQ_SQL + " ORDER BY (r.status='pending') DESC, r.id DESC").filter(r => r.emp_id !== user.id && (broad || team.has(r.emp_id)) && (r.type !== 'password_reset' || user.role === 'admin')).map(parseReq);
 }
 route('GET', '/api/requests', ({ user, query }) => {
   if (query.scope === 'manage') return reviewableRequests(user);
@@ -737,6 +739,7 @@ route('POST', '/api/requests/:id/withdraw', ({ user, params }) => {
 route('POST', '/api/requests/:id/decide', ({ user, params, body }) => {
   const r = get('SELECT * FROM requests WHERE id=?', params.id); if (!r) bad('Not found', 404);
   need(canReviewReq(user, r.emp_id));
+  if (r.type === 'password_reset') { need(user.role === 'admin', 'Only the company admin can handle password resets'); if (body.status === 'approved') bad('Use "Set new password" to approve a password reset'); }
   if (r.status !== 'pending') bad('Already ' + r.status);
   if (!['approved', 'rejected'].includes(body.status)) bad('Invalid status');
   const p = JSON.parse(r.payload || '{}'), emp = get('SELECT * FROM employees WHERE id=?', r.emp_id);
@@ -894,6 +897,119 @@ route('POST', '/api/expenses/company', ({ user, body }) => {
   return { ok: true };
 });
 
+// ---------- employee profile: personal details + document uploads (Aadhaar, PAN, bank, letters, certificates...) ----------
+const DOC_TYPES = { profile_photo: { img: true }, aadhaar_front: {}, aadhaar_back: {}, pan_front: {}, bank_proof: {}, marksheet: { multi: true }, certificate: { multi: true },
+  offer_letter: {}, salary_slip: {}, relieving_letter: {}, experience_letter: {}, other: { multi: true } };
+const MAX_PER_TYPE = 10, MAX_IMG_BYTES = 2.6e6, MAX_PDF_BYTES = 3e6;
+const PROFILE_FIELDS = ['display_name', 'full_name', 'father_name', 'dob', 'gender', 'marital_status', 'blood_group', 'personal_email', 'phone', 'alt_phone', 'current_address', 'permanent_address',
+  'emergency_name', 'emergency_relation', 'emergency_phone', 'aadhaar_no', 'pan_no', 'uan_no', 'bank_holder', 'bank_account_no', 'bank_ifsc', 'bank_name', 'bank_branch', 'bank_branch_code',
+  'qualification', 'university', 'passing_year', 'experience_type', 'prev_company', 'prev_designation', 'prev_from', 'prev_to', 'last_salary'];
+const digits = v => String(v).replace(/[\s-]/g, '');
+const FIELD_RULES = {
+  aadhaar_no: [v => /^\d{12}$/.test(digits(v)), 'Aadhaar number must be 12 digits'],
+  pan_no: [v => /^[A-Z]{5}\d{4}[A-Z]$/.test(v.toUpperCase()), 'PAN must look like ABCDE1234F'],
+  bank_ifsc: [v => /^[A-Za-z]{4}0[A-Za-z0-9]{6}$/.test(v), 'IFSC must look like HDFC0001234'],
+  bank_account_no: [v => /^\d{6,20}$/.test(digits(v)), 'Bank account number must be 6-20 digits'],
+  phone: [v => /^(\+?91)?\d{10}$/.test(digits(v)), 'Phone must be a 10-digit mobile number'],
+  alt_phone: [v => /^(\+?91)?\d{10}$/.test(digits(v)), 'Alternate phone must be a 10-digit mobile number'],
+  emergency_phone: [v => /^(\+?91)?\d{10}$/.test(digits(v)), 'Emergency phone must be a 10-digit mobile number'],
+  personal_email: [v => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v), 'Personal email is not valid'],
+  dob: [v => /^\d{4}-\d{2}-\d{2}$/.test(v), 'Date of birth is not valid'],
+  experience_type: [v => ['fresher', 'experienced'].includes(v), 'Choose fresher or experienced'],
+  gender: [v => ['Male', 'Female', 'Other'].includes(v), 'Choose a gender'],
+  passing_year: [v => /^(19|20)\d{2}$/.test(v), 'Passing year is not valid'],
+};
+function getProfile(empId) { const r = get('SELECT data FROM profiles WHERE emp_id=?', empId); try { return r ? JSON.parse(r.data) : {}; } catch { return {}; } }
+const docList = empId => all('SELECT id,doc_type,filename,mime,size,uploaded FROM documents WHERE emp_id=? ORDER BY doc_type,id', empId);
+// what the company needs on file; experience documents only count for "experienced" joiners
+function completion(f, docs) {
+  const has = new Set(docs.map(d => d.doc_type));
+  const checks = [['Full name', !!f.full_name], ['Date of birth', !!f.dob], ['Phone number', !!f.phone], ['Current address', !!f.current_address], ['Emergency contact', !!(f.emergency_name && f.emergency_phone)],
+    ['Aadhaar number', !!f.aadhaar_no], ['PAN number', !!f.pan_no], ['Bank account details', !!(f.bank_holder && f.bank_account_no && f.bank_ifsc && f.bank_name)], ['Fresher / experienced', !!f.experience_type],
+    ['Profile photo', has.has('profile_photo')], ['Aadhaar card — front', has.has('aadhaar_front')], ['Aadhaar card — back', has.has('aadhaar_back')], ['PAN card', has.has('pan_front')],
+    ['Bank passbook / cheque', has.has('bank_proof')], ['Marksheet', has.has('marksheet')],
+    ...(f.experience_type === 'experienced' ? [['Last company offer letter', has.has('offer_letter')], ['Last company salary slip', has.has('salary_slip')], ['Relieving letter', has.has('relieving_letter')], ['Experience letter', has.has('experience_letter')]] : [])];
+  const done = checks.filter(c => c[1]).length;
+  return { pct: Math.round(done / checks.length * 100), done, total: checks.length, missing: checks.filter(c => !c[1]).map(c => c[0]) };
+}
+function profileCompletionMap() {
+  const profs = Object.fromEntries(all('SELECT emp_id,data FROM profiles').map(r => { let d = {}; try { d = JSON.parse(r.data); } catch {} return [r.emp_id, d]; }));
+  const docs = {}; for (const r of all('SELECT emp_id, doc_type FROM documents GROUP BY emp_id, doc_type')) (docs[r.emp_id] ||= []).push({ doc_type: r.doc_type });
+  return id => completion(profs[id] || {}, docs[id] || []).pct;
+}
+route('GET', '/api/profile', ({ user, query }) => {
+  const id = +query.emp_id || user.id; need(id === user.id || can(user, 'employees'));
+  const e = get('SELECT id,name,emp_code,email,designation,role FROM employees WHERE id=?', id); if (!e) bad('Not found', 404);
+  const fields = getProfile(id), docs = docList(id);
+  return { employee: e, fields, docs, completion: completion(fields, docs), editable: id === user.id };
+});
+route('PUT', '/api/profile', ({ user, body }) => {
+  const f = {};
+  for (const k of PROFILE_FIELDS) if (k in body) {
+    const v = String(body[k] ?? '').trim().slice(0, k.endsWith('address') ? 500 : 200);
+    if (v && FIELD_RULES[k] && !FIELD_RULES[k][0](v)) bad(FIELD_RULES[k][1]);
+    f[k] = k === 'pan_no' || k === 'bank_ifsc' ? v.toUpperCase() : (k === 'aadhaar_no' ? digits(v) : v);
+  }
+  const data = { ...getProfile(user.id), ...f };
+  tx(() => {
+    run('INSERT INTO profiles(emp_id,data,updated) VALUES(?,?,?) ON CONFLICT(emp_id) DO UPDATE SET data=excluded.data, updated=excluded.updated', user.id, JSON.stringify(data), todayStr());
+    // keep the main employee record (used by payroll / payslips) in step
+    run('UPDATE employees SET phone=COALESCE(NULLIF(?,\'\'),phone), dob=COALESCE(NULLIF(?,\'\'),dob), gender=COALESCE(NULLIF(?,\'\'),gender), address=COALESCE(NULLIF(?,\'\'),address), pan=COALESCE(NULLIF(?,\'\'),pan), bank_account=COALESCE(NULLIF(?,\'\'),bank_account) WHERE id=?',
+      data.phone || '', data.dob || '', data.gender || '', data.current_address || '', data.pan_no || '', data.bank_account_no || '', user.id);
+  });
+  return { ok: true, completion: completion(data, docList(user.id)) };
+});
+route('POST', '/api/profile/documents', ({ user, body }) => {
+  const type = body.doc_type, cfg = DOC_TYPES[type]; if (!cfg) bad('Unknown document type');
+  const mime = String(body.mime || ''); if (!['image/jpeg', 'image/png', 'application/pdf'].includes(mime)) bad('Upload a JPG, PNG or PDF file');
+  if (cfg.img && mime === 'application/pdf') bad('The profile photo must be an image');
+  const buf = Buffer.from(String(body.data || ''), 'base64'); if (!buf.length) bad('The file is empty');
+  const isPdf = buf.subarray(0, 5).toString() === '%PDF-', isJpg = buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF, isPng = buf.subarray(1, 4).toString() === 'PNG';
+  if ((mime === 'application/pdf' && !isPdf) || (mime === 'image/jpeg' && !isJpg) || (mime === 'image/png' && !isPng)) bad('The file content does not match its type');
+  if (mime === 'application/pdf' ? buf.length > MAX_PDF_BYTES : buf.length > MAX_IMG_BYTES) bad(mime === 'application/pdf' ? 'PDF is too large (max 3 MB)' : 'Image is too large');
+  const filename = String(body.filename || 'file').replace(/[\\/:*?"<>|\r\n]+/g, '_').slice(0, 120);
+  tx(() => {
+    if (!cfg.multi) run('DELETE FROM documents WHERE emp_id=? AND doc_type=?', user.id, type);
+    else if (get('SELECT COUNT(*) c FROM documents WHERE emp_id=? AND doc_type=?', user.id, type).c >= MAX_PER_TYPE) bad(`You can upload at most ${MAX_PER_TYPE} files here`);
+    run('INSERT INTO documents(emp_id,doc_type,filename,mime,size,data,uploaded) VALUES(?,?,?,?,?,?,?)', user.id, type, filename, mime, buf.length, buf.toString('base64'), todayStr());
+  });
+  const docs = docList(user.id); return { ok: true, docs, completion: completion(getProfile(user.id), docs) };
+});
+route('DELETE', '/api/profile/documents/:id', ({ user, params }) => {
+  const r = run('DELETE FROM documents WHERE id=? AND emp_id=?', params.id, user.id); if (!r.changes) bad('Not found', 404);
+  const docs = docList(user.id); return { ok: true, docs, completion: completion(getProfile(user.id), docs) };
+});
+route('GET', '/api/documents/:id', ({ user, params }) => {
+  const d = get('SELECT * FROM documents WHERE id=?', params.id); if (!d) bad('Not found', 404);
+  need(d.emp_id === user.id || can(user, 'employees'));
+  return { __raw: { type: d.mime, buf: Buffer.from(d.data, 'base64'), cache: 'private, no-store', filename: d.filename } };
+});
+
+// "Forgot password": the employee asks from the login page, the company admin sets a new one
+route('POST', '/api/forgot-password', ({ body }) => {
+  const id = String(body.identifier || '').trim(), key = 'forgot:' + id.toLowerCase();
+  throttle(key); fails.set(key, [...(fails.get(key) || []), Date.now()]);
+  const m = /^([A-Za-z]+)(\d+)$/.exec(id), c = m && M.get('SELECT ' + CO_COLS + ' FROM companies WHERE upper(emp_prefix)=upper(?)', m[1]);
+  if (c && c.status === 'active') inCompany(c, () => {
+    const e = get("SELECT id FROM employees WHERE upper(emp_code)=upper(?) AND role!='admin' AND status!='exited'", id);
+    if (e && !get("SELECT id FROM requests WHERE emp_id=? AND type='password_reset' AND status='pending'", e.id))
+      run('INSERT INTO requests(emp_id,type,payload,reason,created) VALUES(?,?,?,?,?)', e.id, 'password_reset', '{}', String(body.note || '').trim().slice(0, 200) || 'Forgot password', todayStr());
+  });
+  return { ok: true, message: 'If that Employee ID exists, your admin has been notified and will set a new password for you.' };
+}, { public: true });
+route('POST', '/api/requests/:id/reset-password', ({ user, params, body }) => {
+  need(user.role === 'admin', 'Only the company admin can reset passwords'); confirmPw(user, body);
+  const r = get('SELECT * FROM requests WHERE id=?', params.id); if (!r || r.type !== 'password_reset') bad('Not found', 404);
+  if (r.status !== 'pending') bad('Already ' + r.status);
+  const pw = String(body.password || ''); if (pw.length < 6) bad('The new password must be at least 6 characters');
+  tx(() => {
+    run('UPDATE employees SET password_hash=? WHERE id=?', hash(pw), r.emp_id);
+    run("UPDATE requests SET status='approved', decided_by=?, note=?, decided_on=? WHERE id=?", user.id, 'New password set by admin', todayStr(), r.id);
+  });
+  M.run('DELETE FROM sessions WHERE company_id=? AND emp_id=?', ctx().company.id, r.emp_id);
+  return { ok: true };
+});
+
 // ---------- master panel ----------
 const CODE_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
 const mroute = (m, p, h) => route(m, p, h, { master: true });
@@ -1026,7 +1142,7 @@ const handler = (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'SAMEORIGIN'); res.setHeader('Referrer-Policy', 'same-origin');
   const url = new URL(req.url, 'http://x');
   const send = (code, obj) => {
-    if (obj && obj.__raw) { res.writeHead(code, { 'Content-Type': obj.__raw.type, 'Cache-Control': obj.__raw.cache || 'no-cache' }); return res.end(obj.__raw.buf); }
+    if (obj && obj.__raw) { res.writeHead(code, { 'Content-Type': obj.__raw.type, 'Cache-Control': obj.__raw.cache || 'no-cache', ...(obj.__raw.filename ? { 'Content-Disposition': 'inline; filename="' + encodeURIComponent(obj.__raw.filename) + '"' } : {}) }); return res.end(obj.__raw.buf); }
     res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj));
   };
 
@@ -1038,7 +1154,7 @@ const handler = (req, res) => {
   }
 
   let raw = '';
-  req.on('data', c => { raw += c; if (raw.length > 1e6) req.destroy(); });
+  req.on('data', c => { raw += c; if (raw.length > 6e6) req.destroy(); });
   req.on('end', () => {
     if (!raw && req.method !== 'GET' && req.method !== 'HEAD' && req.body) raw = typeof req.body === 'string' ? req.body : Buffer.isBuffer(req.body) ? req.body.toString() : JSON.stringify(req.body);
     try {

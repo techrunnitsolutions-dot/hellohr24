@@ -32,8 +32,9 @@ const PERM_DEFS = [
 const PW = { name: 'confirm_password', label: 'Confirm with your password', type: 'password', required: true, full: true };
 const EXP_CATS = ['Travel', 'Rent', 'Accessories & equipment', 'Office supplies', 'Software & subscriptions', 'Utilities', 'Meals & entertainment', 'Accommodation', 'Marketing', 'Maintenance & repairs', 'Internet & phone', 'Training', 'Other'];
 const WORK_TYPES = ['Office', 'Work from home', 'Hybrid'];
-const REQ_LABEL = { resignation: '🚪 Resignation', transfer: '🔁 Transfer', work_type: '🏠 Work type change' };
+const REQ_LABEL = { resignation: '🚪 Resignation', transfer: '🔁 Transfer', work_type: '🏠 Work type change', password_reset: '🔑 Password reset' };
 const reqText = r => { const p = r.payload || {};
+  if (r.type === 'password_reset') return 'Forgot their password and asked for a new one';
   if (r.type === 'resignation') return `Last working day ${fd(p.last_working_day)}`;
   if (r.type === 'transfer') return `${esc(p.from_dept_name || '—')} → ${esc(p.to_dept_name || p.from_dept_name || 'same department')}${p.to_location ? ' · ' + esc(p.to_location) : ''} from ${fd(p.transfer_date)}`;
   return `${esc(p.from)} → <b>${esc(p.to)}</b> from ${fd(p.worktype_date)}`; };
@@ -42,7 +43,7 @@ function reqTable(rows, o = {}) {
   return table([...(o.withEmp ? [{ h: 'Employee', f: r => `<a href="#/employee/${r.emp_id}"><b>${esc(r.emp_name)}</b></a><br><small class="muted">${esc(r.emp_code)} · ${esc(r.dept || '')}</small>` }] : []),
     { h: 'Request', f: r => `<b>${REQ_LABEL[r.type]}</b>` }, { h: 'Details', f: r => reqText(r) }, { h: 'Reason', f: r => esc(r.reason) }, { h: 'Applied', f: r => fd(r.created) },
     { h: 'Status', f: r => badge(r.status) + (r.decided_by_name ? `<br><small class="muted">by ${esc(r.decided_by_name)}</small>` : '') + (r.note ? `<br><small class="muted">${esc(r.note)}</small>` : '') },
-    { h: '', f: r => r.status !== 'pending' ? '' : o.decide ? `<button class="btn sm ok" data-act="decideReq" data-id="${r.id}" data-v="approved">Approve</button> <button class="btn sm danger" data-act="decideReq" data-id="${r.id}" data-v="rejected">Reject</button>` : r.emp_id === S.user.id ? `<button class="btn sm" data-act="withdrawReq" data-id="${r.id}">Withdraw</button>` : '' }], rows, 'No requests.');
+    { h: '', f: r => r.status !== 'pending' ? '' : r.type === 'password_reset' ? (S.user.role === 'admin' && o.decide ? `<button class="btn sm ok" data-act="resetPwReq" data-id="${r.id}">Set new password</button> <button class="btn sm" data-act="decideReq" data-id="${r.id}" data-v="rejected">Dismiss</button>` : '') : o.decide ? `<button class="btn sm ok" data-act="decideReq" data-id="${r.id}" data-v="approved">Approve</button> <button class="btn sm danger" data-act="decideReq" data-id="${r.id}" data-v="rejected">Reject</button>` : r.emp_id === S.user.id ? `<button class="btn sm" data-act="withdrawReq" data-id="${r.id}">Withdraw</button>` : '' }], rows, 'No requests.');
 }
 const profileRequests = e => e.requests && (e.requests.length || e.requests_can_decide) ? `<div class="card"><h2>Requests</h2>${reqTable(e.requests, { decide: e.requests_can_decide })}</div>` : '';
 async function requestsTab(tabs) {
@@ -105,6 +106,128 @@ async function historyTab(tabs) {
 }
 
 
+// ---- employee profile, documents and the profile PDF ----
+const DOC_META = {
+  profile_photo: ['Profile photo', 'image'], aadhaar_front: ['Aadhaar card — front'], aadhaar_back: ['Aadhaar card — back'], pan_front: ['PAN card — front'], bank_proof: ['Bank passbook / cancelled cheque'],
+  marksheet: ['Marksheets (10th, 12th, graduation…)', 'both', true], certificate: ['Certificates', 'both', true], offer_letter: ['Last company offer letter'], salary_slip: ['Last company salary slip'],
+  relieving_letter: ['Last company relieving letter'], experience_letter: ['Experience letter'], other: ['Other documents', 'both', true],
+};
+const PROFILE_SECTIONS = [
+  ['👤 Personal details', [['display_name', 'Profile name (shown to colleagues)'], ['full_name', 'Full name (as on Aadhaar)'], ['father_name', "Father's name"], ['dob', 'Date of birth', 'date'], ['gender', 'Gender', 'select', ['Male', 'Female', 'Other']],
+    ['marital_status', 'Marital status', 'select', ['Single', 'Married', 'Other']], ['blood_group', 'Blood group', 'select', ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']], ['phone', 'Mobile number', 'tel'], ['alt_phone', 'Alternate mobile', 'tel'],
+    ['personal_email', 'Personal email', 'email'], ['current_address', 'Current address', 'textarea'], ['permanent_address', 'Permanent address', 'textarea']]],
+  ['🚨 Emergency contact', [['emergency_name', 'Name'], ['emergency_relation', 'Relationship'], ['emergency_phone', 'Mobile number', 'tel']]],
+  ['🪪 Identity numbers', [['aadhaar_no', 'Aadhaar number (12 digits)'], ['pan_no', 'PAN number'], ['uan_no', 'UAN / PF number (if any)']]],
+  ['🏦 Bank account (for salary)', [['bank_holder', 'Name as in bank book'], ['bank_account_no', 'Account number'], ['bank_ifsc', 'IFSC code'], ['bank_name', 'Bank name'], ['bank_branch', 'Branch'], ['bank_branch_code', 'Branch code']]],
+  ['🎓 Education', [['qualification', 'Highest qualification'], ['university', 'University / board'], ['passing_year', 'Passing year']]],
+  ['💼 Work history', [['experience_type', 'Are you a fresher or experienced?', 'select', [['fresher', 'Fresher'], ['experienced', 'Experienced']]], ['prev_company', 'Last company'], ['prev_designation', 'Last designation'], ['prev_from', 'From', 'date'], ['prev_to', 'To', 'date'], ['last_salary', 'Last drawn salary (₹ per year)', 'number']]],
+];
+const DOC_GROUPS = [['📷 Photo', ['profile_photo']], ['🪪 Identity documents', ['aadhaar_front', 'aadhaar_back', 'pan_front']], ['🏦 Bank', ['bank_proof']], ['🎓 Education & certificates', ['marksheet', 'certificate']],
+  ['💼 Previous employment (needed if you are experienced)', ['offer_letter', 'salary_slip', 'relieving_letter', 'experience_letter']], ['📎 Anything else', ['other']]];
+const fmtSize = b => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
+const maskNo = (v, keep = 4) => v ? '•'.repeat(Math.max(0, String(v).length - keep)) + String(v).slice(-keep) : '';
+const readB64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => no(new Error('Could not read the file')); r.readAsDataURL(f); });
+async function imageToJpegB64(file, maxDim, q = 0.82) {
+  const url = URL.createObjectURL(file);
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('Could not read that image. Please use a JPG or PNG photo/scan (iPhone HEIC files are not supported).')); i.src = url; });
+  const k = Math.min(1, maxDim / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+  return c.toDataURL('image/jpeg', q).split(',')[1];
+}
+async function prepareUpload(file, type) {
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  if (isPdf) {
+    if (DOC_META[type][1] === 'image') throw new Error('Please choose a photo (JPG or PNG), not a PDF');
+    if (file.size > 3e6) throw new Error('This PDF is larger than 3 MB. Compress it or upload a smaller scan.');
+    return { mime: 'application/pdf', data: await readB64(file), filename: file.name };
+  }
+  if (!/^image\//.test(file.type)) throw new Error('Choose a JPG, PNG or PDF file');
+  if (file.size > 25e6) throw new Error('That image is too large');
+  return { mime: 'image/jpeg', data: await imageToJpegB64(file, type === 'profile_photo' ? 700 : 1600), filename: file.name.replace(/\.\w+$/, '') + '.jpg' };
+}
+// documents need the login token, so they are fetched with it and shown from a blob
+async function docBlob(id) { const r = await fetch('/api/documents/' + id, { headers: { Authorization: 'Bearer ' + S.token } }); if (!r.ok) throw new Error('Could not load the document'); return r.blob(); }
+const docUrls = new Map();
+async function docUrl(id) { if (!docUrls.has(id)) docUrls.set(id, URL.createObjectURL(await docBlob(id))); return docUrls.get(id); }
+async function loadAvatar() {
+  const id = S.user && S.user.photo_id; if (!id) return;
+  try { const url = await docUrl(id); document.querySelectorAll('#userbox .avatar').forEach(a => { a.textContent = ''; Object.assign(a.style, { backgroundImage: `url(${url})`, backgroundSize: 'cover', backgroundPosition: 'center' }); }); } catch {}
+}
+async function refreshMe() { S.user = await api('GET', '/api/me'); buildNav(); loadAvatar(); }
+const profileBanner = d => (d.profilePct !== undefined && d.profilePct < 100) ? `<div class="card" style="border-left:4px solid var(--brand)">🪪 Your profile is <b>${d.profilePct}%</b> complete. Please add your details and documents — <a href="#/myprofile">Complete profile</a></div>` : '';
+
+function profileCard(e, prof) {
+  if (e.id === S.user.id && !isAdmin()) return `<div class="card"><h2>🪪 My profile</h2><p class="muted">Your personal details and documents (Aadhaar, PAN, bank, letters, certificates…).</p><a class="btn primary" href="#/myprofile">Complete / update my profile</a></div>`;
+  if (!prof) return '';
+  const c = prof.completion, F = prof.fields, name = prof.employee.name;
+  const dl = [['Full name', F.full_name], ['Date of birth', F.dob && fd(F.dob)], ['Mobile', F.phone], ['Personal email', F.personal_email], ['Aadhaar no.', F.aadhaar_no && maskNo(F.aadhaar_no)], ['PAN', F.pan_no], ['Bank account', F.bank_holder && `${F.bank_holder} · ${maskNo(F.bank_account_no)} · ${F.bank_ifsc || ''}`], ['Emergency contact', F.emergency_name && `${F.emergency_name} (${F.emergency_relation || ''}) ${F.emergency_phone || ''}`]]
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v ? esc(v) : '<span class="muted">—</span>'}</dd>`).join('');
+  return `<div class="card"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 class="grow" style="margin:0">🪪 Profile & documents</h2><button class="btn primary" data-act="profilePdf" data-id="${e.id}">⬇ Download profile PDF</button></div>
+    <div style="margin:10px 0"><b>${c.pct}%</b> complete (${c.done}/${c.total}) ${bar(c.pct)}${c.missing.length ? `<small class="muted">Missing: ${c.missing.map(esc).join(', ')}</small>` : '<small class="muted">Everything is on file ✓</small>'}</div>
+    <dl class="kv">${dl}</dl>
+    <h3 style="margin-top:14px">Documents</h3>${prof.docs.length ? prof.docs.map(d => `<div class="docfile">📎 <b>${esc(DOC_META[d.doc_type][0])}</b> — ${esc(d.filename)} <small class="muted">${fmtSize(d.size)} · ${fd(d.uploaded)}</small>
+      <button class="btn sm" data-act="viewDoc" data-id="${d.id}" data-mime="${d.mime}" data-name="${esc(d.filename)}">View</button> <button class="btn sm" data-act="downloadDoc" data-id="${d.id}" data-name="${esc(d.filename)}">Download</button></div>`).join('') : '<span class="muted">No documents uploaded yet.</span>'}</div>`;
+}
+const profileCols = list => list.some(e => e.profile_pct !== undefined) ? [{ h: 'Profile', f: e => `<div style="min-width:70px">${e.profile_pct}%${bar(e.profile_pct)}</div>` }, { h: '', f: e => `<button class="btn sm" data-act="profilePdf" data-id="${e.id}" title="Download the full profile as a PDF">⬇ PDF</button>` }] : [];
+
+async function loadPdfLib() {
+  if (window.PDFLib) return window.PDFLib;
+  await new Promise((ok, no) => { const s = document.createElement('script'); s.src = '/vendor/pdf-lib.min.js'; s.onload = ok; s.onerror = () => no(new Error('Could not load the PDF tool')); document.head.appendChild(s); });
+  return window.PDFLib;
+}
+// Builds one PDF: header + all details + every uploaded document (images as pages, uploaded PDFs appended page by page)
+async function buildProfilePdf(empId) {
+  const [lib, prof, emp] = await Promise.all([loadPdfLib(), api('GET', '/api/profile?emp_id=' + empId), api('GET', '/api/employees/' + empId)]);
+  const { PDFDocument, StandardFonts, rgb } = lib, F = prof.fields, co = S.user.company || {};
+  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const W = 595.28, H = 841.89, M = 40, ink = rgb(0.1, 0.12, 0.2), muted = rgb(0.4, 0.43, 0.5), brand = rgb(0.31, 0.27, 0.9);
+  const clean = s => String(s ?? '').replace(/[\u2013\u2014]/g, '-').replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\u20B9/g, 'Rs').replace(/[\u2022\u00B7]/g, '*').replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');   // standard PDF fonts only cover Latin text
+  let page = pdf.addPage([W, H]), y = H - M;
+  const ensure = n => { if (y - n < M) { page = pdf.addPage([W, H]); y = H - M; } };
+  const wrap = (t, f, size, maxW) => { const lines = []; for (const para of clean(t).split('\n')) { let cur = ''; for (const w of para.split(/\s+/)) { const test = cur ? cur + ' ' + w : w; if (f.widthOfTextAtSize(test, size) > maxW && cur) { lines.push(cur); cur = w; } else cur = test; } lines.push(cur); } return lines; };
+  const section = title => { ensure(90); y -= 8; page.drawRectangle({ x: M, y: y - 5, width: W - 2 * M, height: 20, color: rgb(0.93, 0.94, 1) }); page.drawText(clean(title), { x: M + 8, y: y + 1, size: 11, font: bold, color: brand }); y -= 26; };
+  const row = (label, value) => { const lines = wrap(value || '-', font, 10, W - 2 * M - 190); ensure(lines.length * 13 + 4); page.drawText(clean(label), { x: M + 8, y, size: 9.5, font, color: muted }); lines.forEach((ln, i) => page.drawText(ln, { x: M + 180, y: y - i * 13, size: 10, font, color: ink })); y -= lines.length * 13 + 4; };
+  const embedImg = async (bytes, mime) => mime === 'image/png' ? pdf.embedPng(bytes) : pdf.embedJpg(bytes);
+  // header: company logo + name, employee photo
+  let hx = M;
+  if (co.logo_v) { try { const r = await fetch(`/api/logo/${encodeURIComponent(co.code)}?v=${co.logo_v}`), img = await embedImg(new Uint8Array(await r.arrayBuffer()), r.headers.get('content-type')), s = Math.min(46 / img.width, 46 / img.height); page.drawImage(img, { x: M, y: y - 44, width: img.width * s, height: img.height * s }); hx = M + 58; } catch {} }
+  page.drawText(clean(co.name || 'Company'), { x: hx, y: y - 18, size: 17, font: bold, color: ink });
+  page.drawText('Employee profile file', { x: hx, y: y - 34, size: 10, font, color: muted });
+  const photo = prof.docs.find(d => d.doc_type === 'profile_photo');
+  if (photo) { try { const img = await embedImg(new Uint8Array(await (await docBlob(photo.id)).arrayBuffer()), photo.mime), s = Math.min(78 / img.width, 78 / img.height); page.drawImage(img, { x: W - M - img.width * s, y: y - 78, width: img.width * s, height: img.height * s }); } catch {} }
+  y -= 96;
+  page.drawText(clean(F.full_name || emp.name), { x: M, y, size: 15, font: bold, color: ink }); y -= 17;
+  page.drawText(clean(`${emp.emp_code}  ·  ${emp.designation || ''}${emp.dept ? '  ·  ' + emp.dept : ''}`), { x: M, y, size: 10, font, color: muted }); y -= 14;
+  page.drawText(clean(`Profile ${prof.completion.pct}% complete  ·  Generated ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`), { x: M, y, size: 9, font, color: muted }); y -= 20;
+  section('Employment record');
+  [['Employee ID', emp.emp_code], ['Work email', emp.email], ['Department', emp.dept], ['Designation', emp.designation], ['Reports to', emp.manager], ['Date of joining', emp.join_date && fd(emp.join_date)], ['Employment type', emp.employment_type], ['Work location', emp.location]].forEach(([k, v]) => row(k, v));
+  for (const [title, fields] of PROFILE_SECTIONS) {
+    section(title.replace(/^\S+\s/, ''));
+    fields.forEach(([k, label, type]) => row(label, type === 'date' && F[k] ? fd(F[k]) : F[k]));
+  }
+  section('Documents attached');
+  if (!prof.docs.length) row('-', 'No documents uploaded yet'); else prof.docs.forEach(d => row(DOC_META[d.doc_type][0], `${d.filename} (${fmtSize(d.size)}, uploaded ${fd(d.uploaded)})`));
+  // the documents themselves
+  const order = Object.keys(DOC_META);
+  for (const d of [...prof.docs].sort((a, b) => order.indexOf(a.doc_type) - order.indexOf(b.doc_type) || a.id - b.id)) {
+    const caption = `${DOC_META[d.doc_type][0]}  —  ${d.filename}`;
+    try {
+      const bytes = new Uint8Array(await (await docBlob(d.id)).arrayBuffer());
+      if (d.mime === 'application/pdf') {
+        const src = await PDFDocument.load(bytes, { ignoreEncryption: true }), pages = await pdf.copyPages(src, src.getPageIndices());
+        pages.forEach((p, i) => { pdf.addPage(p); if (i === 0) p.drawText(clean(caption), { x: 14, y: p.getHeight() - 11, size: 7.5, font, color: muted }); });
+      } else {
+        const img = await embedImg(bytes, d.mime), pg = pdf.addPage([W, H]), s = Math.min((W - 2 * M) / img.width, (H - 2 * M - 30) / img.height);
+        pg.drawText(clean(caption), { x: M, y: H - M, size: 10, font: bold, color: ink });
+        pg.drawImage(img, { x: (W - img.width * s) / 2, y: H - M - 20 - img.height * s, width: img.width * s, height: img.height * s });
+      }
+    } catch (err) { const pg = pdf.addPage([W, H]); pg.drawText(clean(caption), { x: M, y: H - M, size: 10, font: bold, color: ink }); pg.drawText('This file could not be embedded (' + clean(err.message).slice(0, 60) + '). Download it from the portal.', { x: M, y: H - M - 20, size: 9, font, color: muted }); }
+  }
+  pdf.setTitle(clean(`${emp.name} - profile`)); pdf.setAuthor(clean(co.name || 'HelloHR'));
+  return { bytes: await pdf.save(), filename: `${(F.full_name || emp.name).replace(/[^\w]+/g, '_')}_${emp.emp_code}_profile.pdf` };
+}
+window.HH = { buildProfilePdf };
+const saveBlob = (blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); };
 const permLabel = k => (PERM_DEFS.find(p => p[0] === k) || [k, k])[1];
 const accessFields = (e = {}) => [
   { name: 'account_type', label: 'Account type', type: 'select', full: true, value: e.role === 'manager' ? 'managing' : 'employee',
@@ -241,6 +364,7 @@ PAGES.dashboard = async () => {
     : `<p>Checked in at <b>${t.check_in}</b> ${badge(t.status)}${t.late ? ' <span class="badge pending">late</span>' : ''}${t.reason ? ` <small class="muted">${esc(t.reason)}</small>` : ''}${t.check_out ? ` · out at <b>${t.check_out}</b>` : ''}</p>${t.check_out ? '<p class="muted">Have a great evening!</p>' : '<button class="btn danger" data-act="checkout">Check out</button>'}`;
   return `${head(`${greet}, ${u.name.split(' ')[0]} 👋`, new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}
   ${punchCard(d)}
+  ${isAdmin() ? '' : profileBanner(d)}
   ${isAdmin() ? '' : `<div class="embed">${attHtml}</div>${policiesCard(d.policies)}`}
   ${stats}
   ${d.pendingRequests ? `<div class="card" style="border-left:4px solid var(--brand)">📨 <b>${d.pendingRequests}</b> pending employee request(s) — resignation, transfer or work type change. <a href="#" data-act="goRequests">Review now</a></div>` : ''}
@@ -298,12 +422,13 @@ PAGES.employees = async () => {
     ${can('employees') ? '<button class="btn" data-act="exportEmps">Export CSV</button>' : ''}</div>
     ${table([{ h: 'ID', f: e => e.emp_code }, { h: 'Employee', f: e => `<a href="#/employee/${e.id}"><span class="avatar">${initials(e.name)}</span> <b>${esc(e.name)}</b></a><br><small class="muted">${esc(e.email)}</small>` },
       { h: 'Designation', f: e => esc(e.designation) }, { h: 'Department', f: e => esc(e.dept) }, { h: 'Manager', f: e => esc(e.manager) }, { h: 'Joined', f: e => fd(e.join_date) }, { h: 'Status', f: e => badge(e.status) },
-      ...(list.some(e => e.today) ? [{ h: 'Today (live)', f: e => e.today ? stBadge(e.today) + (e.today.check_in ? `<br><small class="muted">${e.today.check_in}${e.today.check_out ? '–' + e.today.check_out : ''}</small>` : '') : '' }] : [])], rows, 'No employees match.')}</div>`;
+      ...(list.some(e => e.today) ? [{ h: 'Today (live)', f: e => e.today ? stBadge(e.today) + (e.today.check_in ? `<br><small class="muted">${e.today.check_in}${e.today.check_out ? '–' + e.today.check_out : ''}</small>` : '') : '' }] : []), ...profileCols(list)], rows, 'No employees match.')}</div>`;
   S._emps = rows;
   return head('Employees', `${list.filter(e => e.status !== 'exited').length} active people`, isAdmin() ? '<button class="btn primary" data-act="addEmp">+ Add employee</button>' : '') + tab + body;
 };
 PAGES.employee = async id => {
   const e = await api('GET', '/api/employees/' + id), me = S.user, hrv = can('employees');
+  const prof = (can('employees') && e.id !== me.id) ? await api('GET', '/api/profile?emp_id=' + e.id).catch(() => null) : null;
   let sal = '', bal = '';
   if (can('payroll') || e.id === me.id) { const s = await api('GET', '/api/salary-structure?emp_id=' + e.id); sal = `<div class="card"><h2>Salary structure (monthly)</h2><dl class="kv"><dt>Annual CTC</dt><dd><b>${inr(s.ctc)}</b></dd><dt>Basic</dt><dd>${inr(s.monthly.basic)}</dd><dt>HRA</dt><dd>${inr(s.monthly.hra)}</dd><dt>Special allowance</dt><dd>${inr(s.monthly.special)}</dd><dt>Gross / month</dt><dd><b>${inr(s.monthly.gross)}</b></dd><dt>Est. annual tax</dt><dd>${inr(s.annualTax)} <small class="muted">(new regime estimate)</small></dd></dl></div>`; }
   if (e.pan !== undefined) { const b = await api('GET', '/api/leaves/balance?emp_id=' + e.id); bal = `<div class="card"><h2>Leave balance</h2>${b.filter(x => x.days_per_year).map(x => `<div style="display:flex;justify-content:space-between"><span>${esc(x.name)}</span><b>${x.balance} / ${x.days_per_year}</b></div>`).join('')}</div>`; }
@@ -316,7 +441,7 @@ PAGES.employee = async id => {
     ${can('onboarding') && e.status === 'active' && e.role !== 'admin' ? `<button class="btn danger" data-act="offboard" data-id="${e.id}">Start offboarding</button>` : ''}
     ${can('onboarding') && e.status === 'notice' ? `<button class="btn" data-act="cancelExit" data-id="${e.id}">Cancel exit</button>` : ''}</div>
     <div class="grid g2"><div class="card"><h2>Profile</h2><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${k === 'Reports to' ? v : esc(v) || '—'}</dd>`).join('')}</dl></div>
-    <div>${profileRequests(e)}${(e.role === 'manager' && e.perms?.length && (e.pan !== undefined)) ? `<div class="card"><h2>Can manage</h2>${e.perms.map(p => `<span class="badge" style="margin:2px">${esc(permLabel(p))}</span>`).join(' ')}</div>` : ''}${sal}${bal}<div class="card"><h2>Assigned assets</h2>${e.assets.map(a => `<div>${esc(a.name)} <span class="muted">${esc(a.tag)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
+    <div>${profileCard(e, prof)}${profileRequests(e)}${(e.role === 'manager' && e.perms?.length && (e.pan !== undefined)) ? `<div class="card"><h2>Can manage</h2>${e.perms.map(p => `<span class="badge" style="margin:2px">${esc(permLabel(p))}</span>`).join(' ')}</div>` : ''}${sal}${bal}<div class="card"><h2>Assigned assets</h2>${e.assets.map(a => `<div>${esc(a.name)} <span class="muted">${esc(a.tag)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
     ${e.reports.length ? `<div class="card"><h2>Direct reports</h2>${e.reports.map(r => `<div><a href="#/employee/${r.id}">${esc(r.name)}</a> <span class="muted">${esc(r.designation || '')}</span></div>`).join('')}</div>` : ''}</div></div>`;
 };
 
@@ -613,6 +738,42 @@ PAGES.location = async () => {
   ${o ? `<div class="card"><h2>Map</h2>${map}<small class="muted">Employees must be within ${o.radius} m of the marker.</small></div>` : ''}`;
 };
 
+PAGES.myprofile = async () => {
+  const p = await api('GET', '/api/profile'), c = p.completion, F = p.fields;
+  const optsOf = o => o.map(x => Array.isArray(x) ? x : [x, x]);
+  const field = ([k, label, type = 'text', options]) => `<label class="${type === 'textarea' ? 'full' : ''}">${esc(label)}${type === 'select' ? `<select name="${k}"><option value="">—</option>${opts(optsOf(options), F[k])}</select>` : type === 'textarea' ? `<textarea name="${k}" rows="2">${esc(F[k] || '')}</textarea>` : `<input name="${k}" type="${type}" value="${esc(F[k] || '')}" ${type === 'number' ? 'min="0"' : ''}>`}</label>`;
+  const slot = t => { const [label, kind, multi] = DOC_META[t], list = p.docs.filter(d => d.doc_type === t);
+    return `<div class="docslot"><div class="docname"><b>${label}</b> ${list.length ? '<span class="badge present">uploaded</span>' : '<span class="badge pending">missing</span>'}</div>
+      ${list.map(d => `<div class="docfile">📎 ${esc(d.filename)} <small class="muted">${fmtSize(d.size)} · ${fd(d.uploaded)}</small> <button class="btn sm" data-act="viewDoc" data-id="${d.id}" data-mime="${d.mime}" data-name="${esc(d.filename)}">View</button> <button class="btn sm" data-act="downloadDoc" data-id="${d.id}" data-name="${esc(d.filename)}">Download</button> <button class="btn sm danger" data-act="delDoc" data-id="${d.id}">✕</button></div>`).join('')}
+      <label class="btn sm primary uploadbtn">${multi ? (list.length ? '+ Add another' : '+ Upload') : (list.length ? 'Replace' : 'Upload')}<input type="file" hidden data-doc="${t}" accept="${kind === 'image' ? 'image/*' : 'image/*,application/pdf'}"></label></div>`; };
+  return head('Complete your profile', 'The details and documents your company keeps on file for every employee', '<button class="btn primary" data-act="saveProfile">Save details</button>') +
+    `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div style="min-width:120px"><div class="n" style="font-size:34px;font-weight:800">${c.pct}%</div><div class="muted">complete (${c.done}/${c.total})</div></div>
+      <div class="grow" style="min-width:220px">${bar(c.pct)}${c.missing.length ? `<div style="margin-top:8px"><small class="muted">Still needed:</small> ${c.missing.map(m => `<span class="badge pending" style="margin:2px">${esc(m)}</span>`).join(' ')}</div>` : '<div style="margin-top:8px"><span class="badge present">Your profile is complete 🎉</span></div>'}</div></div>
+      <p class="muted" style="margin:10px 0 0">Your documents are stored securely and are visible only to you and your company's admin. Photos are shrunk automatically; PDFs can be up to 3 MB each.</p></div>
+    <form id="profileForm" onsubmit="return false">${PROFILE_SECTIONS.map(([title, fields]) => `<div class="card"><h2>${title}</h2><div class="formgrid">${fields.map(field).join('')}</div></div>`).join('')}</form>
+    <div class="actions" style="margin-bottom:16px"><button class="btn primary" data-act="saveProfile">Save details</button></div>
+    ${DOC_GROUPS.map(([title, types]) => `<div class="card"><h2>${title}</h2><div class="grid g2">${types.map(slot).join('')}</div></div>`).join('')}
+    <div class="card"><h2>🔑 Password</h2><p class="muted">Change your password any time from your account page.</p><a class="btn" href="#/profile">Change password</a></div>`;
+};
+const PROFILE_ACTIONS = {
+  saveProfile: async () => {
+    const data = {}; for (const el of $('#profileForm').elements) if (el.name) data[el.name] = el.value;
+    const r = await api('PUT', '/api/profile', data); toast(`Details saved — profile ${r.completion.pct}% complete`); route();
+  },
+  viewDoc: async (id, el) => {
+    const url = await docUrl(+id), mime = el.dataset.mime, name = el.dataset.name || 'document';
+    modal(`<h2>${esc(name)}</h2>${mime === 'application/pdf' ? `<iframe src="${url}" title="${esc(name)}" style="width:100%;height:68vh;border:1px solid var(--line);border-radius:8px"></iframe>` : `<div style="text-align:center"><img src="${url}" alt="${esc(name)}" style="max-width:100%;max-height:68vh;border-radius:8px"></div>`}
+      <div class="actions"><button class="btn" data-act="downloadDoc" data-id="${id}" data-name="${esc(name)}">Download</button><button class="btn primary" data-act="closeModal">Close</button></div>`, true);
+  },
+  downloadDoc: async (id, el) => saveBlob(await docBlob(+id), el.dataset.name || 'document'),
+  delDoc: id => confirmBox('Delete this file?', async () => { await api('DELETE', '/api/profile/documents/' + id); docUrls.delete(+id); await refreshMe(); }),
+  profilePdf: async id => { toast('Preparing the PDF… this can take a few seconds'); const { bytes, filename } = await buildProfilePdf(+id); saveBlob(new Blob([bytes], { type: 'application/pdf' }), filename); toast('PDF downloaded'); },
+  forgotPw: () => openForm({ title: 'Forgot your password?', intro: 'Enter your Employee ID. Your company admin will be notified and will give you a new password.', submit: 'Send request', fields: [{ name: 'identifier', label: 'Employee ID', required: true }, { name: 'note', label: 'Message to your admin (optional)', type: 'textarea' }],
+    onSubmit: async v => { const r = await api('POST', '/api/forgot-password', v); setTimeout(() => toast(r.message), 100); } }),
+  resetPwReq: id => { const r = S._reqs[id]; openForm({ title: 'Set a new password — ' + r.emp_name, intro: 'Tell the employee their new password; they can change it after signing in.', submit: 'Set password', fields: [{ name: 'password', label: 'New password (min 6 characters)', required: true }, PW],
+    onSubmit: async v => { await api('POST', `/api/requests/${id}/reset-password`, v); toast('Password updated. Share it with the employee.'); } }); },
+};
+
 // ================= master panel =================
 const MPAGES = {};
 MPAGES.companies = async () => {
@@ -662,7 +823,7 @@ const MASTER_ACTIONS = {
 
 // ================= nav / router =================
 const NAV = [
-  ['sec', 'Me'], ['dashboard', '🏠', 'Dashboard'], ['attendance', '🕒', 'Attendance'], ['leave', '🌴', 'Leave'], ['payroll', '💰', 'Payroll'], ['performance', '🎯', 'Performance'], ['expenses', '🧾', 'Expenses'], ['learning', '🎓', 'Learning'],
+  ['sec', 'Me'], ['dashboard', '🏠', 'Dashboard'], ['myprofile', '🪪', 'Complete profile'], ['attendance', '🕒', 'Attendance'], ['leave', '🌴', 'Leave'], ['payroll', '💰', 'Payroll'], ['performance', '🎯', 'Performance'], ['expenses', '🧾', 'Expenses'], ['learning', '🎓', 'Learning'],
   ['sec', 'Company'], ['employees', '👥', 'Employees'], ['announcements', '📢', 'Announcements'], ['helpdesk', '🛟', 'Helpdesk'], ['assets', '💻', 'Assets'],
   ['sec', 'Management', 'staff'], ['recruitment', '🧲', 'Recruitment', 'recruitment'], ['onboarding', '🚪', 'On/Offboarding', 'onboarding'], ['location', '📍', 'Office location', 'settings'], ['settings', '⚙️', 'Settings', 'settings'],
 ];
@@ -675,7 +836,7 @@ function buildNav() {
   { let fav = document.querySelector('link[rel=icon]'); if (!fav) { fav = document.createElement('link'); fav.rel = 'icon'; document.head.appendChild(fav); } fav.href = co && co.logo_v ? `/api/logo/${encodeURIComponent(co.code)}?v=${co.logo_v}` : 'data:,'; }
   $('#banner').innerHTML = localStorage.getItem('hh_master_token') ? '<button class="btn sm danger" data-act="backToMaster">← Back to master panel</button>' : (S.user.company ? logoImg(S.user.company, 'sm') + '<b>' + esc(S.user.company.name) + '</b>' : '<b>Platform master panel</b>');
   if (isMaster()) { $('#nav').innerHTML = '<div class="sec">Platform</div><a href="#/companies" data-nav="companies">🏢 Companies</a><a href="#/maccount" data-nav="maccount">🔐 My account</a>'; $('#userbox').innerHTML = '<div style="text-align:right"><b>' + esc(S.user.name) + '</b><br><small class="muted">MASTER</small></div><button class="btn sm" data-act="logout">Sign out</button>'; return; }
-  $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['leave', 'learning'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
+  $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['leave', 'learning', 'myprofile'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
   $('#userbox').innerHTML = `<div style="text-align:right"><b>${esc(S.user.name)}</b><br><small class="muted">${esc(S.user.role.toUpperCase())} · ${esc(S.user.emp_code)}</small></div><a href="#/profile" class="avatar" title="My account">${initials(S.user.name)}</a><button class="btn sm" data-act="logout">Sign out</button>`;
 }
 async function route() {
@@ -795,6 +956,7 @@ const A = {
 };
 
 Object.assign(A, MASTER_ACTIONS);
+Object.assign(A, PROFILE_ACTIONS);
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = A[el.dataset.act]; if (!fn) return; e.preventDefault();
@@ -802,6 +964,11 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', guard(async e => {
   const t = e.target;
+  if (t.dataset.doc) {
+    const f = t.files[0]; if (!f) return;
+    try { toast('Uploading…'); const u = await prepareUpload(f, t.dataset.doc); await api('POST', '/api/profile/documents', { doc_type: t.dataset.doc, ...u }); toast('Uploaded ✓'); if (t.dataset.doc === 'profile_photo') await refreshMe(); route(); } finally { t.value = ''; }
+    return;
+  }
   if (t.id === 'attMonth') { S.attMonth = t.value; route(); }
   else if (t.id === 'attDate') { S.attDate = t.value; route(); }
   else if (t.id === 'repMonth') { S.repMonth = t.value; route(); }
@@ -831,6 +998,7 @@ const LOGIN = {
 }[PORTAL];
 $('#loginTitle').textContent = LOGIN.t; $('#loginSub').textContent = LOGIN.s; $('#idLabel').textContent = LOGIN.l; $('#loginForm').elements.identifier.type = LOGIN.type;
 if (PORTAL === 'employee') $('#loginForm').elements.identifier.placeholder = 'e.g. HH005';
+if (PORTAL === 'employee') $('#demoBox').insertAdjacentHTML('beforebegin', '<div class="center" style="margin-top:6px"><a href="#" data-act="forgotPw">Forgot password?</a></div>');
 $('#demoBox').innerHTML = '<b>Demo</b> (click to fill): ' + LOGIN.demo.map(d => `<a href="#" data-demo="${d[1]}|${d[2]}">${d[0]}</a>`).join(' · ');
 document.querySelectorAll('[data-demo]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); const [id, pw] = a.dataset.demo.split('|'); const f = $('#loginForm').elements; f.identifier.value = id; f.password.value = pw; }));
 
@@ -844,7 +1012,7 @@ async function start() {
     S.user = await api('GET', '/api/me');
     if (portalOf(S.user) !== PORTAL) { logoutLocal(); return; }
     S.lk = isMaster() ? null : await api('GET', '/api/lookups');
-    $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); buildNav();
+    $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); buildNav(); loadAvatar();
     const onMasterPage = ['#/companies', '#/maccount'].includes(location.hash);
     if (!location.hash || isMaster() !== onMasterPage) location.hash = isMaster() ? '#/companies' : '#/dashboard';
     route();
