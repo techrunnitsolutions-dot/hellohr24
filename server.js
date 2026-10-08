@@ -212,11 +212,11 @@ route('DELETE', '/api/departments/:id', ({ user, params }) => {
 });
 
 // employees
-const SENSITIVE = ['ctc', 'pan', 'bank_account', 'address', 'dob', 'exit_reason', 'gender'];
+const SENSITIVE = ['ctc', 'salary_type', 'salary_amount', 'pan', 'bank_account', 'address', 'dob', 'exit_reason', 'gender'];
 const without = (o, keys) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
 function shape(user, e, team) {
   if (!(e.id === user.id || can(user, 'employees') || team.has(e.id))) return without(e, SENSITIVE);
-  return e.id === user.id || can(user, 'payroll') ? e : without(e, ['ctc']);
+  return e.id === user.id || can(user, 'payroll') ? e : without(e, ['ctc', 'salary_type', 'salary_amount']);
 }
 route('GET', '/api/employees', ({ user, query }) => {
   const team = new Set(teamIds(user)), staff = isStaff(user);
@@ -243,22 +243,31 @@ function parseAccess(body) {
   if (!perms.length) bad('Pick at least one thing this person can manage, or make them a normal employee');
   return { role: 'manager', permissions: JSON.stringify(perms) };
 }
+// what the admin typed in the salary section: a basis (annual CTC or annual in-hand) and an annual amount; plain "ctc" still works
+function salaryInput(body) {
+  const type = body.salary_type || 'ctc', amount = body.salary_type ? body.salary_amount : body.ctc;
+  if (!body.salary_type && (amount === undefined || amount === '' || amount === null)) return null;
+  try { return PE.resolveSalary(type, amount || 0); } catch (e) { bad(e.message); }
+}
+const salaryText = e => e.salary_type === 'inhand' ? `in-hand ${round(e.salary_amount || 0)}` : `CTC ${round(e.ctc || 0)}`;
+function logSalary(empId, kind, before, after, user) { run('INSERT INTO salary_log(emp_id,kind,before_text,after_text,by_id,at) VALUES(?,?,?,?,?,?)', empId, kind, before, after, user.id, new Date().toISOString()); }
 function createEmployee(body) {
   req_(body, 'name', 'email', 'join_date');
-  const acc = parseAccess(body);
+  const acc = parseAccess(body), sal = salaryInput(body);
   if (get('SELECT id FROM employees WHERE lower(email)=lower(?)', body.email)) bad('Email already in use');
   const pw = body.password || 'welcome123';
   const id = tx(() => {
     const r = run(`INSERT INTO employees(emp_code,name,email,password_hash,role,permissions,phone,dept_id,designation,manager_id,join_date,gender,dob,address,ctc,pan,bank_account,location,employment_type)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nextEmpCode(), body.name, body.email, hash(pw), acc.role, acc.permissions, body.phone, body.dept_id || null,
-      body.designation, body.manager_id || null, body.join_date, body.gender, body.dob, body.address, +body.ctc || 0, body.pan, body.bank_account, body.location, body.employment_type || 'Full-time');
+      body.designation, body.manager_id || null, body.join_date, body.gender, body.dob, body.address, sal ? sal.ctc : 0, body.pan, body.bank_account, body.location, body.employment_type || 'Full-time');
     const eid = r.lastInsertRowid;
+    if (sal) run('UPDATE employees SET salary_type=?, salary_amount=? WHERE id=?', sal.type, sal.amount, eid);
     ['Collect signed offer letter & ID proofs', 'Create email & system accounts', 'Issue laptop & access card', 'Complete HR induction', 'Assign buddy / reporting manager intro', 'Enroll in mandatory training']
       .forEach(t => run('INSERT INTO checklists(emp_id,kind,title) VALUES(?,?,?)', eid, 'onboarding', t));
     all('SELECT id FROM courses WHERE mandatory=1').forEach(c => run('INSERT OR IGNORE INTO enrollments(emp_id,course_id) VALUES(?,?)', eid, c.id));
     return eid;
   });
-  return { id, password: pw, emp_code: get('SELECT emp_code FROM employees WHERE id=?', id).emp_code };
+  return { id, password: pw, emp_code: get('SELECT emp_code FROM employees WHERE id=?', id).emp_code, salary: sal };
 }
 route('POST', '/api/employees', ({ user, body }) => {
   need(user.role === 'admin', 'Only the company admin (or the master) can create employee accounts');
@@ -277,11 +286,18 @@ route('PUT', '/api/employees/:id', ({ user, params, body }) => {
     if (isAdm && body.password) confirmPw(user, body);
     const f = ['name', 'phone', 'dept_id', 'designation', 'manager_id', 'join_date', 'gender', 'dob', 'address', 'pan', 'bank_account', 'location', 'employment_type', 'work_type'];
     if (isAdm) f.push('email');
-    if (can(user, 'payroll')) f.push('ctc');
     if (isAdm && body.email && body.email !== e.email && get('SELECT id FROM employees WHERE lower(email)=lower(?) AND id!=?', body.email, id)) bad('Email already in use');
     if (body.manager_id && +body.manager_id === id) bad('An employee cannot report to themselves');
     const upd = f.filter(k => k in body);
-    if (upd.length) run(`UPDATE employees SET ${upd.map(k => k + '=?').join(',')} WHERE id=?`, ...upd.map(k => k === 'ctc' ? +body[k] || 0 : (body[k] === '' ? null : body[k])), id);
+    if (can(user, 'payroll') && ('salary_type' in body || 'salary_amount' in body || 'ctc' in body)) {
+      const sal = salaryInput({ salary_type: body.salary_type || (('salary_amount' in body) ? e.salary_type : undefined), salary_amount: 'salary_amount' in body ? body.salary_amount : (e.salary_type === 'inhand' ? e.salary_amount : e.ctc), ctc: body.ctc });
+      if (sal && (sal.ctc !== e.ctc || sal.type !== (e.salary_type || 'ctc'))) {
+        if (sal.ctc !== e.ctc) confirmPw(user, body);
+        run('UPDATE employees SET ctc=?, salary_type=?, salary_amount=? WHERE id=?', sal.ctc, sal.type, sal.amount, id);
+        logSalary(id, sal.ctc !== e.ctc ? 'edit' : 'basis', salaryText(e), salaryText({ ...e, ctc: sal.ctc, salary_type: sal.type, salary_amount: sal.amount }), user);
+      }
+    }
+    if (upd.length) run(`UPDATE employees SET ${upd.map(k => k + '=?').join(',')} WHERE id=?`, ...upd.map(k => body[k] === '' ? null : body[k]), id);
     if (isAdm && e.role !== 'admin' && 'account_type' in body) { const acc = parseAccess(body); run('UPDATE employees SET role=?, permissions=? WHERE id=?', acc.role, acc.permissions, id); }
     if (isAdm && body.password) run('UPDATE employees SET password_hash=? WHERE id=?', hash(body.password), id);
   } else {
@@ -582,9 +598,45 @@ route('GET', '/api/payslips', ({ user, query }) => {
 });
 route('GET', '/api/salary-structure', ({ user, query }) => {
   const id = +query.emp_id || user.id; need(can(user, 'payroll') || id === user.id);
-  const e = get('SELECT ctc FROM employees WHERE id=?', id); const s = structure(e.ctc);
-  return { ctc: e.ctc, monthly: Object.fromEntries(Object.entries(s).map(([k, v]) => [k, round(v)])), annualTax: round(annualTax(e.ctc)) };
+  const e = get('SELECT ctc, salary_type, salary_amount FROM employees WHERE id=?', id); const s = structure(e.ctc);
+  return { ctc: e.ctc, salary_type: e.salary_type || 'ctc', salary_amount: e.salary_amount, breakdown: PE.salaryBreakdown(e.ctc), monthly: Object.fromEntries(Object.entries(s).map(([k, v]) => [k, round(v)])), annualTax: round(annualTax(e.ctc)) };
 });
+
+// salary method: how each person's pay is expressed (annual CTC or annual in-hand)
+const salRow = e => { const b = PE.salaryBreakdown(e.ctc || 0), t = e.salary_type || 'ctc';
+  return { id: e.id, emp_code: e.emp_code, name: e.name, designation: e.designation, salary_type: t, salary_amount: e.salary_amount != null ? e.salary_amount : (t === 'inhand' ? b.inhand_annual : e.ctc), ctc: e.ctc || 0, gross_monthly: b.gross_monthly, inhand_annual: b.inhand_annual, inhand_monthly: b.inhand_monthly }; };
+route('GET', '/api/salary', ({ user }) => {
+  need(can(user, 'payroll'));
+  return all("SELECT id,emp_code,name,designation,ctc,salary_type,salary_amount FROM employees WHERE role!='admin' AND status!='exited' ORDER BY emp_code").map(salRow);
+});
+route('POST', '/api/salary/preview', ({ user, body }) => { need(can(user, 'payroll')); const s = PE.resolveSalary(body.salary_type, body.salary_amount); return s; });
+route('PUT', '/api/salary', ({ user, body }) => {
+  need(can(user, 'payroll')); confirmPw(user, body);
+  const list = Array.isArray(body.changes) ? body.changes : []; if (!list.length) bad('Nothing to save');
+  const out = tx(() => list.map(c => {
+    const e = get("SELECT * FROM employees WHERE id=? AND role!='admin'", +c.emp_id); if (!e) bad('Employee not found');
+    let sal; try { sal = PE.resolveSalary(c.salary_type, c.salary_amount); } catch (x) { bad(x.message); }
+    if (sal.type === 'inhand' && sal.amount === Math.round(PE.salaryBreakdown(e.ctc || 0).inhand_annual)) sal = { ...sal, ctc: e.ctc };   // same pay, only re-expressed
+    if (sal.ctc === e.ctc && sal.type === (e.salary_type || 'ctc') && sal.amount === e.salary_amount) return null;
+    run('UPDATE employees SET ctc=?, salary_type=?, salary_amount=? WHERE id=?', sal.ctc, sal.type, sal.amount, e.id);
+    logSalary(e.id, sal.ctc !== e.ctc ? 'edit' : 'basis', salaryText(e), salaryText({ ...e, ctc: sal.ctc, salary_type: sal.type, salary_amount: sal.amount }), user);
+    return e.id;
+  }).filter(Boolean));
+  return { ok: true, changed: out.length };
+});
+// re-express everyone's current pay under the other basis, pay itself unchanged
+route('POST', '/api/salary/switch-type', ({ user, body }) => {
+  need(can(user, 'payroll')); confirmPw(user, body);
+  if (!['ctc', 'inhand'].includes(body.salary_type)) bad('Choose annual CTC or annual in-hand');
+  const ids = Array.isArray(body.emp_ids) && body.emp_ids.length ? body.emp_ids.map(Number) : null;
+  const n = tx(() => all("SELECT * FROM employees WHERE role!='admin' AND status!='exited'").filter(e => (!ids || ids.includes(e.id)) && (e.salary_type || 'ctc') !== body.salary_type).map(e => {
+    const amt = body.salary_type === 'ctc' ? e.ctc : Math.round(PE.salaryBreakdown(e.ctc || 0).inhand_annual);
+    run('UPDATE employees SET salary_type=?, salary_amount=? WHERE id=?', body.salary_type, amt, e.id);
+    logSalary(e.id, 'basis', salaryText(e), salaryText({ ...e, salary_type: body.salary_type, salary_amount: amt }), user);
+  }).length);
+  return { ok: true, changed: n };
+});
+route('GET', '/api/salary/log', ({ user }) => { need(can(user, 'payroll')); return all('SELECT x.*, e.name, e.emp_code, a.name by_name FROM salary_log x LEFT JOIN employees e ON e.id=x.emp_id LEFT JOIN employees a ON a.id=x.by_id ORDER BY x.id DESC LIMIT 60'); });
 
 // recruitment
 route('GET', '/api/jobs', ({ user }) => { need(can(user, 'recruitment')); return all('SELECT j.*, d.name dept, (SELECT COUNT(*) FROM candidates c WHERE c.job_id=j.id) candidates FROM jobs j LEFT JOIN departments d ON d.id=j.dept_id ORDER BY j.id DESC'); });

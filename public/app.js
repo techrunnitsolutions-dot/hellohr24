@@ -401,14 +401,16 @@ const empFields = (e = {}, adding) => [
   ...(isAdmin() && e.role !== 'admin' ? accessFields(e) : []),
   { name: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time', 'Contract', 'Intern'].map(x => [x, x]), value: e.employment_type },
   { name: 'location', label: 'Work location', value: e.location }, { name: 'work_type', label: 'Work type', type: 'select', options: WORK_TYPES.map(x => [x, x]), value: e.work_type || 'Office' }, { name: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Other'].map(x => [x, x]), value: e.gender, blank: '—' },
-  { name: 'dob', label: 'Date of birth', type: 'date', value: e.dob }, ...(can('payroll') ? [{ name: 'ctc', label: 'Annual CTC (₹)', type: 'number', value: e.ctc, min: 0 }] : []),
+  { name: 'dob', label: 'Date of birth', type: 'date', value: e.dob }, ...(can('payroll') ? (adding ? SALARY_FIELDS() : [{ name: 'salary_amount', label: `Annual ${e.salary_type === 'inhand' ? 'in-hand' : 'CTC'} (₹) — change the basis from Salary method`, type: 'number', value: e.salary_type === 'inhand' && e.salary_amount != null ? e.salary_amount : e.ctc, min: 0 }]) : []),
   { name: 'pan', label: 'PAN', value: e.pan }, { name: 'bank_account', label: 'Bank account no.', value: e.bank_account },
   { name: 'address', label: 'Address', type: 'textarea', value: e.address, full: true },
-  ...(!isAdmin() ? [] : adding ? [{ name: 'password', label: 'Initial password (blank = welcome123)', type: 'text', value: '' }, PW] : [{ name: 'password', label: 'Reset password (leave blank to keep)', value: '' }, { ...PW, required: false, label: 'Your password (needed only when changing the password or account type)' }]),
+  ...(!isAdmin() ? [] : adding ? [{ name: 'password', label: 'Initial password (blank = welcome123)', type: 'text', value: '' }, PW] : [{ name: 'password', label: 'Reset password (leave blank to keep)', value: '' }, { ...PW, required: false, label: 'Your password (needed only when changing the password, account type or salary)' }]),
 ];
 const addEmployee = (prefill = {}, after) => openForm({ title: 'Add employee', wide: true, submit: 'Create employee', fields: empFields(prefill, true),
-  onSubmit: async v => { const r = await api('POST', '/api/employees', v); S.lk = await api('GET', '/api/lookups'); setTimeout(() => modal(`<h2>Employee created ✅</h2><p>Share these login details with the employee (they sign in on the employee login page):</p><dl class="kv"><dt>Employee ID</dt><dd><b>${esc(r.emp_code)}</b></dd><dt>Password</dt><dd><b>${esc(r.password)}</b></dd></dl><div class="actions"><button class="btn primary" data-act="closeModal">Done</button></div>`), 50); if (after) await after(r.id); } });
+  onSubmit: async v => { const r = await api('POST', '/api/employees', v); S.lk = await api('GET', '/api/lookups'); setTimeout(() => modal(`<h2>Employee created ✅</h2><p>Share these login details with the employee (they sign in on the employee login page):</p><dl class="kv"><dt>Employee ID</dt><dd><b>${esc(r.emp_code)}</b></dd><dt>Password</dt><dd><b>${esc(r.password)}</b></dd></dl>${salaryNote(r.salary)}<div class="actions"><button class="btn primary" data-act="closeModal">Done</button></div>`), 50); if (after) await after(r.id); } });
 
+const SALARY_FIELDS = () => [{ name: 'salary_type', label: 'Salary basis', type: 'select', options: [['ctc', 'Annual CTC (cost to company)'], ['inhand', 'Annual in-hand (take-home)']], value: 'ctc' }, { name: 'salary_amount', label: 'Annual amount (₹)', type: 'number', min: 0 }];
+const salaryNote = s => s ? `<dl class="kv"><dt>Salary basis</dt><dd><b>${s.type === 'inhand' ? 'Annual in-hand' : 'Annual CTC'}</b> ${inr(s.amount)}</dd><dt>Annual CTC</dt><dd>${inr(s.ctc)}</dd><dt>Take-home / month</dt><dd>${inr(s.inhand_monthly)} <small class="muted">(before overtime)</small></dd></dl>` : '';
 PAGES.employees = async () => {
   const q = S.empQ || {};
   const list = await api('GET', '/api/employees');
@@ -434,7 +436,7 @@ PAGES.employee = async id => {
   const e = await api('GET', '/api/employees/' + id), me = S.user, hrv = can('employees');
   const prof = (can('employees') && e.id !== me.id) ? await api('GET', '/api/profile?emp_id=' + e.id).catch(() => null) : null;
   let sal = '', bal = '';
-  if (can('payroll') || e.id === me.id) { const s = await api('GET', '/api/salary-structure?emp_id=' + e.id); sal = `<div class="card"><h2>Salary structure (monthly)</h2><dl class="kv"><dt>Annual CTC</dt><dd><b>${inr(s.ctc)}</b></dd><dt>Basic</dt><dd>${inr(s.monthly.basic)}</dd><dt>HRA</dt><dd>${inr(s.monthly.hra)}</dd><dt>Special allowance</dt><dd>${inr(s.monthly.special)}</dd><dt>Gross / month</dt><dd><b>${inr(s.monthly.gross)}</b></dd><dt>Est. annual tax</dt><dd>${inr(s.annualTax)} <small class="muted">(new regime estimate)</small></dd></dl></div>`; }
+  if (can('payroll') || e.id === me.id) { const s = await api('GET', '/api/salary-structure?emp_id=' + e.id); sal = `<div class="card"><h2>Salary structure (monthly)</h2><dl class="kv"><dt>Salary basis</dt><dd>${s.salary_type === 'inhand' ? 'Annual in-hand' : 'Annual CTC'}${s.salary_type === 'inhand' && s.salary_amount != null ? ' <b>' + inr(s.salary_amount) + '</b>' : ''}</dd><dt>Annual CTC</dt><dd><b>${inr(s.ctc)}</b></dd><dt>Take-home / month</dt><dd>${inr(s.breakdown.inhand_monthly)}</dd><dt>Basic</dt><dd>${inr(s.monthly.basic)}</dd><dt>HRA</dt><dd>${inr(s.monthly.hra)}</dd><dt>Special allowance</dt><dd>${inr(s.monthly.special)}</dd><dt>Gross / month</dt><dd><b>${inr(s.monthly.gross)}</b></dd><dt>Est. annual tax</dt><dd>${inr(s.annualTax)} <small class="muted">(new regime estimate)</small></dd></dl></div>`; }
   if (e.pan !== undefined) { const b = await api('GET', '/api/leaves/balance?emp_id=' + e.id); bal = `<div class="card"><h2>Leave balance</h2>${b.filter(x => x.days_per_year).map(x => `<div style="display:flex;justify-content:space-between"><span>${esc(x.name)}</span><b>${x.balance} / ${x.days_per_year}</b></div>`).join('')}</div>`; }
   const kv = [['Employee ID', e.emp_code], ['Email', e.email], ['Phone', e.phone], ['Department', e.dept], ['Designation', e.designation], ['Reports to', e.manager ? `<a href="#/employee/${e.manager_id}">${esc(e.manager)}</a>` : '—'], ['Joined', fd(e.join_date)], ['Type', e.employment_type], ['Location', e.location], ['Work type', e.work_type], ['Role', e.role],
     ...(e.pan !== undefined ? [['DOB', fd(e.dob)], ['Gender', e.gender], ['PAN', e.pan], ['Bank a/c', e.bank_account], ['Address', e.address]] : [])];
@@ -586,7 +588,7 @@ async function adminPayroll() {
   const month = S.payMonth || ym(new Date()), o = await api('GET', '/api/payroll/overview?month=' + month); S._slips = o.rows; S._payOv = o;
   const stat = (n, l) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const status = o.run ? badge(o.run.status) : '<span class="badge">not run yet · preview</span>';
-  return head('Payroll — all employees', monthName(month), `<input type="month" id="payMonth" value="${month}" style="width:auto"> <button class="btn" data-act="exportPayOv">Export CSV</button> ${o.run?.status === 'finalized' ? '' : '<button class="btn primary" data-act="runPayroll">Run / recalculate payroll</button>'}`) + tabs +
+  return head('Payroll — all employees', monthName(month), `<input type="month" id="payMonth" value="${month}" style="width:auto"> <a class="btn" href="#/salary">Salary method</a> <button class="btn" data-act="exportPayOv">Export CSV</button> ${o.run?.status === 'finalized' ? '' : '<button class="btn primary" data-act="runPayroll">Run / recalculate payroll</button>'}`) + tabs +
     `<div class="grid g4" style="margin-bottom:16px">${stat(o.totals.employees, 'Employees on payroll')}${stat(inr(o.totals.gross), 'Total gross')}${stat(inr(o.totals.deductions), 'Total deductions')}${stat(inr(o.totals.net), 'Net payout')}</div>
     <div class="card"><p class="muted" style="margin-top:0">Salary date: <b>${fd(o.totals.pay_date)}</b> · Overtime this month: <b>${o.totals.ot_hours} h → ${inr(o.totals.ot_pay)}</b> (hourly rate + premium)</p><p>Status: ${status} ${o.run ? '' : '<span class="muted">— figures are calculated live from attendance and approved leave; run payroll to save and publish payslips.</span>'}</p>
     ${table([{ h: 'Employee', f: p => `<a href="#/employee/${p.emp_id}"><b>${esc(p.name)}</b></a><br><small class="muted">${esc(p.emp_code)} · ${esc(p.designation || '')}</small>` }, { h: 'Annual CTC', f: p => inr(p.ctc) }, { h: 'Paid days', f: p => `${p.paid_days}/${p.working_days}${p.partial_hours ? `<br><small class="muted">${p.partial_hours} h short-day</small>` : ''}` },
@@ -835,10 +837,10 @@ const MASTER_ACTIONS = {
       { name: 'company_id', label: 'Belongs to admin / company', type: 'select', full: true, required: true, options: cos.map(c => [c.id, c.name + ' — admin: ' + c.admin_email]) },
       { name: 'name', label: 'Full name', required: true }, { name: 'email', label: 'Work email', type: 'email', required: true },
       { name: 'phone', label: 'Phone' }, { name: 'designation', label: 'Designation' }, { name: 'join_date', label: 'Joining date', type: 'date', value: today(), required: true },
-      { name: 'ctc', label: 'Annual CTC (₹)', type: 'number', min: 0 }, { name: 'location', label: 'Work location' }, { name: 'password', label: 'Initial password (blank = welcome123)' },
+      ...SALARY_FIELDS(), { name: 'location', label: 'Work location' }, { name: 'password', label: 'Initial password (blank = welcome123)' },
       ...accessFields(), PW],
       onSubmit: async v => { const c = cos.find(x => x.id == v.company_id); const r = await api('POST', `/api/master/companies/${v.company_id}/employees`, v);
-        setTimeout(() => modal(`<h2>Employee created ✅</h2><p>Added under <b>${esc(c.name)}</b> — only that company's admin can see them.</p><dl class="kv"><dt>Employee ID</dt><dd><b>${esc(r.emp_code)}</b></dd><dt>Password</dt><dd><b>${esc(r.password)}</b></dd></dl><p class="muted">They sign in at the employee login page (/).</p><div class="actions"><button class="btn primary" data-act="closeModal">Done</button></div>`), 50); } });
+        setTimeout(() => modal(`<h2>Employee created ✅</h2><p>Added under <b>${esc(c.name)}</b> — only that company's admin can see them.</p><dl class="kv"><dt>Employee ID</dt><dd><b>${esc(r.emp_code)}</b></dd><dt>Password</dt><dd><b>${esc(r.password)}</b></dd></dl>${salaryNote(r.salary)}<p class="muted">They sign in at the employee login page (/).</p><div class="actions"><button class="btn primary" data-act="closeModal">Done</button></div>`), 50); } });
   },
   addCompany: () => openForm({ title: 'Create company', wide: true, intro: 'This creates a separate database for the company plus its first admin account.', submit: 'Create company', fields: [
     { name: 'name', label: 'Company name', required: true }, { name: 'code', label: 'Short code (lowercase, e.g. acme)', required: true }, { name: 'emp_prefix', label: 'Employee ID prefix (2-6 letters, e.g. ACME → ACME001)' },
@@ -861,11 +863,42 @@ const MASTER_ACTIONS = {
   },
 };
 
+// ================= salary method: annual CTC or annual in-hand, per employee =================
+PAGES.salary = async () => {
+  if (!can('payroll')) { location.hash = '#/dashboard'; return ''; }
+  const [rows, log] = await Promise.all([api('GET', '/api/salary'), api('GET', '/api/salary/log')]); S._sal = rows; S._salEdits = {};
+  const nIn = rows.filter(r => r.salary_type === 'inhand').length;
+  const bulk = `<button class="btn" data-act="salBulk" data-id="ctc">Everyone → annual CTC</button> <button class="btn" data-act="salBulk" data-id="inhand">Everyone → annual in-hand</button>`;
+  return head('Salary method', `${rows.length} employees · ${rows.length - nIn} on annual CTC · ${nIn} on annual in-hand`, bulk + ' <button class="btn primary" data-act="salSave">Save changes</button>') +
+    `<div class="card"><p class="muted" style="margin-top:0"><b>Annual CTC</b>: pay is the cost to company; take-home is worked out after PF, professional tax and income tax. <b>Annual in-hand</b>: you type the yearly take-home and the CTC is worked out for you. Switching the basis keeps the current pay; typing a new amount changes it (saved with your password and logged).</p>
+    ${table([{ h: 'Employee', f: r => `<a href="#/employee/${r.id}"><b>${esc(r.name)}</b></a><br><small class="muted">${esc(r.emp_code)} · ${esc(r.designation || '')}</small>` },
+      { h: 'Salary basis', f: r => `<select data-saltype="${r.id}"><option value="ctc" ${r.salary_type === 'ctc' ? 'selected' : ''}>Annual CTC</option><option value="inhand" ${r.salary_type === 'inhand' ? 'selected' : ''}>Annual in-hand</option></select>` },
+      { h: 'Annual amount (₹)', f: r => `<input type="number" min="0" style="width:140px" data-salamt="${r.id}" value="${Math.round(r.salary_amount || 0)}">` },
+      { h: 'Annual CTC', f: r => `<span id="sc${r.id}">${inr(r.ctc)}</span>` }, { h: 'Annual in-hand', f: r => `<span id="si${r.id}">${inr(r.inhand_annual)}</span>` }, { h: 'In-hand / month', f: r => `<b id="sm${r.id}">${inr(r.inhand_monthly)}</b>` }], rows, 'No employees yet.')}</div>
+    <div class="card"><h2>Recent salary changes</h2>${table([{ h: 'When', f: x => fd(x.at.slice(0, 10)) }, { h: 'Employee', f: x => esc(x.name || '') + ' <small class="muted">' + esc(x.emp_code || '') + '</small>' }, { h: 'Change', f: x => (x.kind === 'basis' ? 'Basis: ' : 'Pay: ') + esc(x.before_text) + ' → ' + esc(x.after_text) }, { h: 'By', f: x => esc(x.by_name || '') }], log, 'No changes yet.')}</div>`;
+};
+const SAL_ACTIONS = {
+  salSave: () => {
+    const ch = Object.entries(S._salEdits || {}).map(([id, v]) => ({ emp_id: +id, salary_type: v.type, salary_amount: v.amount }));
+    if (!ch.length) return toast('Nothing changed yet');
+    openForm({ title: 'Save salary changes', intro: `${ch.length} employee(s) will be updated.`, submit: 'Save', fields: [PW], onSubmit: async v => { const r = await api('PUT', '/api/salary', { changes: ch, confirm_password: v.confirm_password }); toast(`Saved (${r.changed} updated)`); } });
+  },
+  salBulk: type => openForm({ title: 'Switch salary basis', intro: `Everyone will be shown as <b>${type === 'inhand' ? 'annual in-hand' : 'annual CTC'}</b>. Nobody's pay changes.`, submit: 'Switch', fields: [PW], onSubmit: async v => { const r = await api('POST', '/api/salary/switch-type', { salary_type: type, confirm_password: v.confirm_password }); toast(`${r.changed} employee(s) switched`); } }),
+};
+Object.assign(A, SAL_ACTIONS);
+async function salRowChanged(id, el) {
+  const r = S._sal.find(x => x.id == id), t = document.querySelector(`[data-saltype="${id}"]`), a = document.querySelector(`[data-salamt="${id}"]`);
+  if (el.dataset.saltype) a.value = Math.round(t.value === 'ctc' ? r.ctc : r.inhand_annual);   // switching basis keeps the pay
+  const p = await api('POST', '/api/salary/preview', { salary_type: t.value, salary_amount: a.value });
+  $('#sc' + id).textContent = inr(p.ctc); $('#si' + id).textContent = inr(p.inhand_annual); $('#sm' + id).textContent = inr(p.inhand_monthly);
+  S._salEdits[id] = { type: t.value, amount: +a.value };
+}
+
 // ================= nav / router =================
 const NAV = [
   ['sec', 'Me'], ['dashboard', '🏠', 'Dashboard'], ['myprofile', '🪪', 'Complete profile'], ['attendance', '🕒', 'Attendance'], ['leave', '🌴', 'Leave'], ['payroll', '💰', 'Payroll'], ['performance', '🎯', 'Performance'], ['expenses', '🧾', 'Expenses'], ['learning', '🎓', 'Learning'],
   ['sec', 'Company'], ['employees', '👥', 'Employees'], ['announcements', '📢', 'Announcements'], ['helpdesk', '🛟', 'Helpdesk'], ['assets', '💻', 'Assets'],
-  ['sec', 'Management', 'staff'], ['recruitment', '🧲', 'Recruitment', 'recruitment'], ['onboarding', '🚪', 'On/Offboarding', 'onboarding'], ['location', '📍', 'Office location', 'settings'], ['settings', '⚙️', 'Settings', 'settings'],
+  ['sec', 'Management', 'staff'], ['recruitment', '🧲', 'Recruitment', 'recruitment'], ['onboarding', '🚪', 'On/Offboarding', 'onboarding'], ['salary', '💵', 'Salary method', 'payroll'], ['location', '📍', 'Office location', 'settings'], ['settings', '⚙️', 'Settings', 'settings'],
 ];
 function buildNav() {
   // Portal title = the company's name (for that company's admin and employees); the master panel keeps the platform name.
@@ -1021,6 +1054,7 @@ document.addEventListener('change', guard(async e => {
   else if (t.id === 'histTo') { S.histTo = t.value; route(); }
   else if (t.id === 'histEmp') { S.histEmp = t.value; route(); }
   else if (t.id === 'histAway') { S.histAway = t.value; route(); }
+  else if (t.dataset.saltype || t.dataset.salamt) { await salRowChanged(t.dataset.saltype || t.dataset.salamt, t); }
   else if (t.id === 'payMonth') { S.payMonth = t.value; route(); }
   else if (t.id === 'perfDays') { S.perfDays = t.value; route(); }
   else if (t.id === 'expCat') { S.expCat = t.value; route(); }

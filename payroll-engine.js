@@ -30,6 +30,34 @@ function payDate(month, day = 7) {
   return `${y}-${String(m).padStart(2, '0')}-${String(Math.min(28, Math.max(1, Math.round(day)))).padStart(2, '0')}`;
 }
 
+// ---- salary basis: "annual CTC" or "annual in-hand" (take-home after PF, professional tax and income tax) ----
+// annual take-home produced by a given CTC with the same rules buildSlip uses (full attendance, no overtime)
+function annualNet(ctc) {
+  const g = ctc / 12, basic = g * 0.4, pf = Math.min(basic, 15000) * 0.12, pt = g > 15000 ? 200 : 0;
+  return 12 * (g - pf - pt) - annualTax(ctc);
+}
+// the CTC whose annual take-home equals `inhand` (smallest solution; tax rebates make take-home dip at one point, so scan first, then refine)
+function ctcFromInhand(inhand) {
+  if (!(inhand > 0)) return 0;
+  let lo = 0, hi = null;
+  for (let c = 1000; c <= inhand * 4 + 100000; c += 1000) { if (annualNet(c) >= inhand) { hi = c; break; } lo = c; }
+  if (hi === null) return Math.round(inhand * 4);
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (annualNet(mid) >= inhand) hi = mid; else lo = mid; }
+  return Math.round(hi);
+}
+function salaryBreakdown(ctc) {
+  const g = ctc / 12, basic = g * 0.4, pf = Math.min(basic, 15000) * 0.12, pt = g > 15000 ? 200 : 0, tds = annualTax(ctc) / 12;
+  return { ctc: round(ctc), gross_monthly: round(g), pf: round(pf), pt: round(pt), tds: round(tds), inhand_monthly: round(g - pf - pt - tds), inhand_annual: round(annualNet(ctc)) };
+}
+// turns what the admin typed (type + annual amount) into the CTC payroll works from
+function resolveSalary(type, amount) {
+  const a = Math.round(+amount);
+  if (!['ctc', 'inhand'].includes(type)) throw new Error('Choose annual CTC or annual in-hand');
+  if (!(a >= 0 && a <= 1e9)) throw new Error('Enter a valid annual amount');
+  const ctc = type === 'ctc' ? a : ctcFromInhand(a);
+  return { type, amount: a, ctc, ...salaryBreakdown(ctc) };
+}
+
 // dayOf(date) must return the derived attendance of that day: { status, minutes, manual, in_progress }
 function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0 }) {
   const first = month + '-01', last = lastDay(month), officeMin = Math.round(cfg.office_hours * 60), halfMin = cfg.half_day_hours * 60;
@@ -61,4 +89,4 @@ function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0
     ot_hours: round(otHours), ot_pay: round(otPay), partial_hours: round(partialMin / 60), hourly_rate: round(hourly),
     deductions: round(deductions), net: round(gross - deductions + reimb + otPay) };
 }
-module.exports = { round, annualTax, structure, buildSlip, payDate };
+module.exports = { round, annualTax, structure, buildSlip, payDate, annualNet, ctcFromInhand, salaryBreakdown, resolveSalary };

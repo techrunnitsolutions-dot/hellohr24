@@ -41,4 +41,18 @@ s = P.buildSlip({ emp, month: '2026-10', today: '2026-10-08', cfg, hols: HOLS, d
 // salary day
 eq('salary day: September salary is paid on 7 October', P.payDate('2026-09', 7), '2026-10-07'); eq('December salary rolls into January', P.payDate('2026-12', 7), '2027-01-07'); eq('salary day is capped at 28', P.payDate('2026-01', 31), '2026-02-28');
 eq('config defaults', [cfg.salary_day, cfg.ot_premium], [7, 75]); eq('config overrides', [E.normCfg({ salary_day: '10', ot_premium_percent: '50' }).salary_day, E.normCfg({ salary_day: '10', ot_premium_percent: '50' }).ot_premium], [10, 50]);
+
+// ---- salary basis: annual CTC vs annual in-hand ----
+for (const H of [150000, 180000, 240000, 300000, 480000, 600000, 960000, 1100000, 1200000, 1500000, 2400000, 3600000, 6000000]) {
+  const c = P.ctcFromInhand(H); eq(`in-hand ${H} -> CTC ${c} gives back ${H} (within Rs 2)`, Math.abs(P.annualNet(c) - H) < 2, true); eq(`CTC ${c} is above the in-hand ${H}`, c >= H, true);
+}
+eq('CTC order follows in-hand order', [240000, 480000, 960000, 1500000, 3000000].map(P.ctcFromInhand).every((c, i, a) => i === 0 || c > a[i - 1]), true);
+eq('zero / negative in-hand', [P.ctcFromInhand(0), P.ctcFromInhand(-5)], [0, 0]);
+// the slip really pays the typed in-hand: a full month at that CTC nets 1/12 of it (within a few rupees of rounding)
+{ const H = 1000000, c = P.ctcFromInhand(H), s = P.buildSlip({ emp: { id: 1, ctc: c, join_date: '2020-01-01' }, month: '2026-09', today: '2026-10-15', cfg, hols: new Set(), dayOf: () => ({ status: 'office', minutes: 540 }) });
+  eq('full month at the derived CTC nets in-hand / 12', Math.abs(s.net * 12 - H) < 30, true); }
+{ const b = P.salaryBreakdown(1200000); eq('breakdown of a 12L CTC: gross/month', b.gross_monthly, 100000); eq('breakdown: PF is 12% of basic capped at 15000 basic', b.pf, 1800); eq('breakdown: in-hand annual = 12 x monthly', Math.abs(b.inhand_annual - b.inhand_monthly * 12) < 1, true); }
+{ const a = P.resolveSalary('ctc', 1200000), b = P.resolveSalary('inhand', a.inhand_annual); eq('resolve ctc keeps the CTC', a.ctc, 1200000); eq('resolve in-hand of that CTC returns (about) the same CTC', Math.abs(b.ctc - 1200000) <= 2, true); }
+eq('bad basis refused', (() => { try { P.resolveSalary('hourly', 1); } catch (e) { return e.message; } })(), 'Choose annual CTC or annual in-hand');
+eq('bad amount refused', (() => { try { P.resolveSalary('ctc', -1); } catch (e) { return e.message; } })(), 'Enter a valid annual amount');
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
