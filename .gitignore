@@ -8,3 +8,9 @@ Screenshot*.png
 *.png.tmp
 .vercel
 .env*
+
+.vercel
+.env*
+.agents/
+.claude/
+skills-lock.json
