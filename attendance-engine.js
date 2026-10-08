@@ -19,6 +19,7 @@ function normCfg(r = {}) {
   const c = {
     office_start: r.office_start || '09:30', office_end: r.office_end || '18:30',
     grace_minutes: num(r.grace_minutes, 30), half_day_hours: num(r.half_day_hours, 4), full_day_hours: num(r.full_day_hours, 8), allowance_days: num(r.allowance_days, 3),
+    salary_day: Math.min(28, Math.max(1, Math.round(num(r.salary_day, 7)))), ot_premium: num(r.ot_premium_percent, 75),   // payroll rules that live next to the attendance rules
   };
   c.grace_end = fmtMin(toMin(c.office_start) + c.grace_minutes);
   c.office_hours = (toMin(c.office_end) - toMin(c.office_start)) / 60;
@@ -39,7 +40,7 @@ function workedSecs(rec, sessions, date, nowS, todayS) {
 // ctx = how many "late relaxation" / "short day" allowances were already used earlier in the same month.
 function derive(rec, date, cfg, ctx = { late_used: 0, short_used: 0 }, sessions = [], nowS = '00:00:00', todayS = '') {
   const nowT = nowS.slice(0, 5);
-  if (rec && rec.manual) return { status: rec.status === 'present' ? 'office' : rec.status, reason: 'Set by admin', late: false, minutes: Math.floor(workedSecs(rec, sessions, date, nowS, todayS) / 60) };
+  if (rec && rec.manual) return { status: rec.status === 'present' ? 'office' : rec.status, reason: 'Set by admin', manual: true, late: false, minutes: Math.floor(workedSecs(rec, sessions, date, nowS, todayS) / 60) };
   if (!rec) {
     if (date > todayS) return { status: 'pending', minutes: 0 };
     if (date === todayS && nowT < cfg.grace_end) return { status: 'pending', reason: 'Office starts ' + cfg.office_start, minutes: 0 };
@@ -54,7 +55,7 @@ function derive(rec, date, cfg, ctx = { late_used: 0, short_used: 0 }, sessions 
     return { ...base, status: mode, in_progress: true, reason: null };
   }
   const A = cfg.allowance_days, officeMin = Math.round(cfg.office_hours * 60), halfMin = cfg.half_day_hours * 60, fullMin = cfg.full_day_hours * 60;
-  if (minutes < halfMin) return { ...base, status: 'absent', reason: `Only ${fmtHM(minutes)} worked (needs ${cfg.half_day_hours}h for a half day)` };
+  if (minutes < halfMin) return { ...base, status: 'absent', reason: `Only ${fmtHM(minutes)} worked (under ${cfg.half_day_hours}h: counted as hours, not a day)` };
   let halfBy = null;
   if (lateBy > cfg.grace_minutes) halfBy = `Arrived ${lateBy} min late (more than the ${cfg.grace_minutes} min relaxation)`;
   else if (lateBy > 0 && ctx.late_used >= A) halfBy = `Late arrival — the ${A} relaxation days this month are used up`;

@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS payruns(id INTEGER PRIMARY KEY, month TEXT UNIQUE, st
 CREATE TABLE IF NOT EXISTS payslips(
   id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, emp_id INTEGER NOT NULL, month TEXT,
   working_days REAL, paid_days REAL, lop_days REAL, basic REAL, hra REAL, special REAL, gross REAL,
-  pf REAL, pt REAL, tds REAL, reimbursements REAL, deductions REAL, net REAL);
+  pf REAL, pt REAL, tds REAL, reimbursements REAL, deductions REAL, net REAL, ot_hours REAL, ot_pay REAL, partial_hours REAL, hourly_rate REAL);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, title TEXT, dept_id INTEGER, openings INTEGER DEFAULT 1, location TEXT, description TEXT, status TEXT DEFAULT 'open', created TEXT);
 CREATE TABLE IF NOT EXISTS candidates(id INTEGER PRIMARY KEY, job_id INTEGER, name TEXT, email TEXT, phone TEXT, stage TEXT DEFAULT 'Applied', notes TEXT, expected_ctc REAL, created TEXT);
 CREATE TABLE IF NOT EXISTS checklists(id INTEGER PRIMARY KEY, emp_id INTEGER, kind TEXT, title TEXT, done INTEGER DEFAULT 0, done_on TEXT);
@@ -152,8 +152,9 @@ function pgHandle(schema, tables) {
   };
 }
 const schemaOf = file => 'c_' + String(file).replace(/\.db$/, '').replace(/[^a-z0-9]/gi, '_').toLowerCase();
-function pgEnsureSchema(schema, ddl) {
-  pgCall(`BEGIN; SELECT pg_advisory_xact_lock(727274); CREATE SCHEMA IF NOT EXISTS "${schema}"; SET LOCAL search_path TO "${schema}"; ${ddlToPg(ddl)} COMMIT;`, [], true);
+const TENANT_MIGRATIONS = 'ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_pay DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS partial_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION;';
+function pgEnsureSchema(schema, ddl, extra = '') {
+  pgCall(`BEGIN; SELECT pg_advisory_xact_lock(727274); CREATE SCHEMA IF NOT EXISTS "${schema}"; SET LOCAL search_path TO "${schema}"; ${ddlToPg(ddl)} ${extra} COMMIT;`, [], true);
 }
 
 // ================= handles =================
@@ -167,7 +168,7 @@ if (IS_PG) {
   pgCall('ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS logo TEXT; ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS logo_v TEXT;', [], true);
   master = pgHandle('public', MASTER_TABLES);
   tenantDb = file => {
-    if (!tenants.has(file)) { const s = schemaOf(file); pgEnsureSchema(s, SCHEMA); tenants.set(file, pgHandle(s, TENANT_TABLES)); }
+    if (!tenants.has(file)) { const s = schemaOf(file); pgEnsureSchema(s, SCHEMA, TENANT_MIGRATIONS); tenants.set(file, pgHandle(s, TENANT_TABLES)); }
     return tenants.get(file);
   };
   dropTenant = file => tenants.delete(file);
@@ -187,6 +188,7 @@ if (IS_PG) {
       const t = open(path.isAbsolute(file) ? file : path.join(DATA, file), SCHEMA);
       ensure(t, 'employees', { permissions: 'TEXT', work_type: "TEXT DEFAULT 'Office'", geo_exempt: 'INTEGER DEFAULT 0' });
       ensure(t, 'attendance', { manual: 'INTEGER DEFAULT 0' });
+      ensure(t, 'payslips', { ot_hours: 'REAL', ot_pay: 'REAL', partial_hours: 'REAL', hourly_rate: 'REAL' });
       ensure(t, 'leave_types', { kind: "TEXT DEFAULT 'leave'" });
       ensure(t, 'punches', { in_lat: 'REAL', in_lng: 'REAL', in_acc: 'REAL', in_dist: 'REAL', in_away: 'INTEGER DEFAULT 0', out_lat: 'REAL', out_lng: 'REAL', out_acc: 'REAL', out_dist: 'REAL', out_away: 'INTEGER DEFAULT 0' });
       tenants.set(file, t);

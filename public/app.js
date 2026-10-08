@@ -56,7 +56,7 @@ async function requestsTab(tabs) {
 }
 const hms = s => [Math.floor(s / 3600), Math.floor(s % 3600 / 60), Math.floor(s % 60)].map(x => String(x).padStart(2, '0')).join(':');
 const hm = m => `${Math.floor(m / 60)}h ${String(Math.round(m % 60)).padStart(2, '0')}m`;
-const DAY_LABEL = { office: 'Full day', wfh: 'Full day · work from home', half: 'Half day', absent: 'Absent — under the half-day hours' };
+const DAY_LABEL = { office: 'Full day', wfh: 'Full day · work from home', half: 'Half day', absent: 'Under the half-day hours — paid by the hour' };
 function punchCard(d) {
   if (isAdmin() || !d.punch) return '';
   const p = d.punch, c = p.cfg, total = c.office_hours * 3600;
@@ -327,6 +327,7 @@ const head = (title, sub, right = '') => `<div class="page-head"><div><h1>${esc(
 // ================= pages =================
 const PAGES = {};
 
+const ordSuffix = n => { const x = ['th', 'st', 'nd', 'rd'], v = n % 100; return x[(v - 20) % 10] || x[v] || x[0]; };
 function policiesCard(p) {
   const c = p.attendance, li = t => `<li>${t}</li>`;
   const leave = p.leaveTypes.map(t => li(t.kind === 'wfh' ? `<b>${esc(t.name)}</b> — request approval to work remotely; counts as a working day and uses no leave balance` : `<b>${esc(t.name)}</b> — ${t.days_per_year ? t.days_per_year + ' days per year' : 'unlimited'}, ${t.is_paid ? 'paid' : 'unpaid (salary is cut for these days)'}`)).join('');
@@ -335,17 +336,20 @@ function policiesCard(p) {
       <div><h3>🕒 Attendance (automatic)</h3><ul class="policy">
         ${li(`Office hours: <b>${c.office_start} – ${c.office_end}</b> (${c.office_hours} hours); Saturday, Sunday and company holidays are off`)}
         ${li('Working hours are counted from <b>Punch In</b> to <b>Punch Out</b>. You can punch in and out several times; the time adds up')}
-        ${li(`Under <b>${c.half_day_hours} hours</b> → counted <b>Absent</b>. <b>${c.half_day_hours} hours</b> or more → <b>Half day</b>. <b>${c.full_day_hours} hours</b> or more → <b>Full day</b>`)}
+        ${li(`Under <b>${c.half_day_hours} hours</b> → <b>not counted as a day</b> (only those hours are paid). <b>${c.half_day_hours} hours</b> or more → <b>Half day</b>. <b>${c.full_day_hours} hours</b> or more → <b>Full day</b>`)}
         ${li(`The full office day is ${c.office_hours} hours. A day of ${c.full_day_hours}–${c.office_hours} hours still counts as a Full day, but only <b>${c.allowance_days} times a month</b>. From the next time it counts as a <b>Half day</b>`)}
         ${li(`Arriving up to <b>${c.grace_minutes} minutes late</b> is allowed <b>${c.allowance_days} times a month</b>. After that it counts as a <b>Half day</b>. More than ${c.grace_minutes} minutes late is always a Half day`)}
         ${li(`No punch-in by <b>${c.grace_end}</b> → marked <b>Absent</b> automatically (changes when you punch in). Forgot to punch out → <b>Half day</b> until you do`)}
         ${li('Work from home counts the same when you punch in from the portal')}</ul></div>
-      <div><h3>🌴 Leave</h3><ul class="policy">${leave}${li('Leave needs approval from your manager. Overlapping requests are not allowed')}${li('Absent days and half days (counted as 0.5) are treated as loss of pay')}</ul></div>
+      <div><h3>🌴 Leave</h3><ul class="policy">${leave}${li('Leave needs approval from your manager. Overlapping requests are not allowed')}${li('Absent days and half days (counted as 0.5) are treated as loss of pay. A day with fewer than the half-day hours is paid by the hour instead')}</ul></div>
       <div><h3>💰 Payroll</h3><ul class="policy">
         ${li('Monthly salary = annual CTC ÷ 12: Basic 40%, HRA 50% of basic, rest special allowance')}
         ${li('Provident Fund 12% of basic (basic capped at ₹15,000). Professional tax ₹200 when gross is above ₹15,000')}
         ${li('Income tax (TDS) is deducted monthly as per the new tax regime estimate')}
-        ${li('Payslips are published once payroll for the month is finalized')}</ul></div>
+        ${li(`Salary is paid on the <b>${c.salary_day}${ordSuffix(c.salary_day)} of every month</b>, for the previous month`)}
+        ${li('Payslips are published once payroll for the month is finalized')}
+        ${li(`Working fewer than <b>${c.half_day_hours} hours</b> in a day is not counted as a present day: only those hours are paid, at your hourly rate (monthly salary ÷ working days ÷ ${c.office_hours} hours)`)}
+        ${li(`Hours beyond <b>${c.office_hours} hours</b> in a day are overtime: paid at your hourly rate <b>plus ${c.ot_premium}% extra</b> and added to that month's payroll`)}</ul></div>
       <div><h3>🧾 Expenses</h3><ul class="policy">
         ${li('Submit claims with category, amount and date; your manager or the company approves them')}
         ${li('Approved claims are paid out with the next payroll')}</ul></div>
@@ -531,10 +535,10 @@ async function adminAttendance() {
   const stat = (n, l) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   return head('Company attendance', new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) + (o.holiday ? ' · ' + o.holiday : !o.workday ? ' · Weekend' : ''), `<span class="muted">🟢 Live · updated ${live}</span> <input type="date" id="attDate" value="${date}" style="width:auto">`) + tabs +
     `<div class="grid g4" style="margin-bottom:16px">${stat(c.office, '🏢 In office')}${stat(c.wfh, '🏠 Work from home')}${stat(c.leave, '🌴 On leave')}${stat(c.absent, '🚫 Absent')}</div>
-    <div class="card"><small class="muted"><b>Office policies</b> — office ${cfg.office_start}–${cfg.office_end} (${cfg.office_hours}h). Hours = punch-in to punch-out. Under ${cfg.half_day_hours}h → <b>Absent</b> · ${cfg.half_day_hours}–${cfg.full_day_hours}h → <b>Half day</b> · ${cfg.full_day_hours}–${cfg.office_hours}h → <b>Full day</b> for the first ${cfg.allowance_days} such days a month, then Half day · ${cfg.office_hours}h+ → <b>Full day</b>. Up to ${cfg.grace_minutes} min late is allowed ${cfg.allowance_days} days a month, then Half day (later than that is always Half day). No punch-in by ${cfg.grace_end} → <b>Absent</b>. This page refreshes itself as employees punch in and out. <a href="#/settings">Change rules</a></small></div>
+    <div class="card"><small class="muted"><b>Office policies</b> — office ${cfg.office_start}–${cfg.office_end} (${cfg.office_hours}h). Hours = punch-in to punch-out. Under ${cfg.half_day_hours}h → <b>hours only, not a day</b> · ${cfg.half_day_hours}–${cfg.full_day_hours}h → <b>Half day</b> · ${cfg.full_day_hours}–${cfg.office_hours}h → <b>Full day</b> for the first ${cfg.allowance_days} such days a month, then Half day · ${cfg.office_hours}h+ → <b>Full day</b>. Up to ${cfg.grace_minutes} min late is allowed ${cfg.allowance_days} days a month, then Half day (later than that is always Half day). No punch-in by ${cfg.grace_end} → <b>Absent</b>. This page refreshes itself as employees punch in and out. <a href="#/settings">Change rules</a></small></div>
     <div class="card"><div class="toolbar">${chip('all', 'Everyone', c.total)}${chip('office', 'In office', c.office)}${chip('wfh', 'WFH', c.wfh)}${chip('half', 'Half day', c.half)}${chip('leave', 'On leave', c.leave)}${chip('absent', 'Absent', c.absent)}${chip('pending', 'Yet to arrive', c.pending)}${chip('late', 'Late', c.late)}</div>
     ${table([{ h: 'Employee', f: r => `<b>${esc(r.name)}</b><br><small class="muted">${esc(r.emp_code)} · ${esc(r.designation || '')}</small>` }, { h: 'Department', f: r => esc(r.dept) }, { h: 'Status', f: stBadge },
-      { h: 'In', f: r => r.check_in || '—' }, { h: 'Out', f: r => r.check_out || '—' }, { h: 'Hours', f: r => r.hours ?? '—' },
+      { h: 'In', f: r => r.check_in || '—' }, { h: 'Out', f: r => r.check_out || '—' }, { h: 'Hours', f: r => `${r.hours ?? '—'}${r.overtime ? ` <small class="muted">(+${r.overtime} OT)</small>` : ''}` },
       { h: 'Correct', f: r => `<select data-mark="${r.id}" data-date="${date}" style="width:auto;margin:0">${opts([['auto', 'Automatic'], ['present', 'In office'], ['wfh', 'WFH'], ['half', 'Half day'], ['absent', 'Absent']], r.manual ? (r.status === 'office' ? 'present' : r.status) : 'auto')}</select>` }], shown, 'No employees in this view.')}</div>`;
 }
 
@@ -562,12 +566,12 @@ PAGES.leave = async () => {
 };
 
 // ---- payroll ----
-const slipHtml = p => `<div class="slip"><div style="display:flex;align-items:center;gap:10px">${logoImg(S.user.company, 'md')}<h2 style="margin:0">${esc(S.user.company?.name || 'Company')}</h2></div><div class="muted">Payslip for ${monthName(p.month)}</div><hr>
+const slipHtml = p => `<div class="slip"><div style="display:flex;align-items:center;gap:10px">${logoImg(S.user.company, 'md')}<h2 style="margin:0">${esc(S.user.company?.name || 'Company')}</h2></div><div class="muted">Payslip for ${monthName(p.month)}${p.pay_date ? ' · Salary date: ' + fd(p.pay_date) : ''}</div><hr>
   <div class="grid g2"><dl class="kv"><dt>Employee</dt><dd><b>${esc(p.name)}</b></dd><dt>Emp ID</dt><dd>${esc(p.emp_code)}</dd><dt>Designation</dt><dd>${esc(p.designation)}</dd><dt>Department</dt><dd>${esc(p.dept || '—')}</dd></dl>
   <dl class="kv"><dt>PAN</dt><dd>${esc(p.pan || '—')}</dd><dt>Bank a/c</dt><dd>${esc(p.bank_account || '—')}</dd><dt>Working days</dt><dd>${p.working_days}</dd><dt>Paid days</dt><dd>${p.paid_days} <span class="muted">(LOP ${p.lop_days})</span></dd></dl></div>
-  <div class="grid g2"><div><h3>Earnings</h3><table><tr><td>Basic</td><td class="right">${inr(p.basic)}</td></tr><tr><td>HRA</td><td class="right">${inr(p.hra)}</td></tr><tr><td>Special allowance</td><td class="right">${inr(p.special)}</td></tr>${p.reimbursements ? `<tr><td>Reimbursements</td><td class="right">${inr(p.reimbursements)}</td></tr>` : ''}<tr><th>Gross</th><th class="right">${inr(p.gross)}</th></tr></table></div>
+  <div class="grid g2"><div><h3>Earnings</h3><table><tr><td>Basic</td><td class="right">${inr(p.basic)}</td></tr><tr><td>HRA</td><td class="right">${inr(p.hra)}</td></tr><tr><td>Special allowance</td><td class="right">${inr(p.special)}</td></tr><tr><th>Gross</th><th class="right">${inr(p.gross)}</th></tr>${p.ot_pay ? `<tr><td>Overtime (${p.ot_hours} h)</td><td class="right">${inr(p.ot_pay)}</td></tr>` : ''}${p.reimbursements ? `<tr><td>Reimbursements</td><td class="right">${inr(p.reimbursements)}</td></tr>` : ''}</table></div>
   <div><h3>Deductions</h3><table><tr><td>Provident Fund</td><td class="right">${inr(p.pf)}</td></tr><tr><td>Professional Tax</td><td class="right">${inr(p.pt)}</td></tr><tr><td>Income Tax (TDS)</td><td class="right">${inr(p.tds)}</td></tr><tr><th>Total</th><th class="right">${inr(p.deductions)}</th></tr></table></div></div>
-  <h2 style="text-align:right;margin-top:16px">Net pay: ${inr(p.net)}</h2><small class="muted">System-generated payslip. Tax figures are estimates.</small></div>`;
+  <h2 style="text-align:right;margin-top:16px">Net pay: ${inr(p.net)}</h2><small class="muted">${p.hourly_rate ? `Hourly rate ${inr(p.hourly_rate)}. ` : ''}${p.partial_hours ? `${p.partial_hours} h worked on short days (under half a day) is paid hourly and included above. ` : ''}System-generated payslip. Tax figures are estimates.</small></div>`;
 function printSlip(html) {
   const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print', true);
   w.document.write(`<html><head><title>Payslip</title><link rel="stylesheet" href="/style.css"></head><body style="padding:20px">${html}</body></html>`); w.document.close(); setTimeout(() => w.print(), 400);
@@ -584,9 +588,9 @@ async function adminPayroll() {
   const status = o.run ? badge(o.run.status) : '<span class="badge">not run yet · preview</span>';
   return head('Payroll — all employees', monthName(month), `<input type="month" id="payMonth" value="${month}" style="width:auto"> <button class="btn" data-act="exportPayOv">Export CSV</button> ${o.run?.status === 'finalized' ? '' : '<button class="btn primary" data-act="runPayroll">Run / recalculate payroll</button>'}`) + tabs +
     `<div class="grid g4" style="margin-bottom:16px">${stat(o.totals.employees, 'Employees on payroll')}${stat(inr(o.totals.gross), 'Total gross')}${stat(inr(o.totals.deductions), 'Total deductions')}${stat(inr(o.totals.net), 'Net payout')}</div>
-    <div class="card"><p>Status: ${status} ${o.run ? '' : '<span class="muted">— figures are calculated live from attendance and approved leave; run payroll to save and publish payslips.</span>'}</p>
-    ${table([{ h: 'Employee', f: p => `<a href="#/employee/${p.emp_id}"><b>${esc(p.name)}</b></a><br><small class="muted">${esc(p.emp_code)} · ${esc(p.designation || '')}</small>` }, { h: 'Annual CTC', f: p => inr(p.ctc) }, { h: 'Paid days', f: p => `${p.paid_days}/${p.working_days}` },
-      { h: 'Gross', f: p => inr(p.gross) }, { h: 'PF', f: p => inr(p.pf) }, { h: 'PT', f: p => inr(p.pt) }, { h: 'TDS', f: p => inr(p.tds) }, { h: 'Reimb.', f: p => inr(p.reimbursements) }, { h: 'Net pay', f: p => `<b>${inr(p.net)}</b>` }, { h: '', f: p => `<button class="btn sm" data-act="viewSlip" data-id="${p.id}">Slip</button>` }], o.rows, 'No employees with a salary set.')}</div>`;
+    <div class="card"><p class="muted" style="margin-top:0">Salary date: <b>${fd(o.totals.pay_date)}</b> · Overtime this month: <b>${o.totals.ot_hours} h → ${inr(o.totals.ot_pay)}</b> (hourly rate + premium)</p><p>Status: ${status} ${o.run ? '' : '<span class="muted">— figures are calculated live from attendance and approved leave; run payroll to save and publish payslips.</span>'}</p>
+    ${table([{ h: 'Employee', f: p => `<a href="#/employee/${p.emp_id}"><b>${esc(p.name)}</b></a><br><small class="muted">${esc(p.emp_code)} · ${esc(p.designation || '')}</small>` }, { h: 'Annual CTC', f: p => inr(p.ctc) }, { h: 'Paid days', f: p => `${p.paid_days}/${p.working_days}${p.partial_hours ? `<br><small class="muted">${p.partial_hours} h short-day</small>` : ''}` },
+      { h: 'Gross', f: p => inr(p.gross) }, { h: 'PF', f: p => inr(p.pf) }, { h: 'PT', f: p => inr(p.pt) }, { h: 'TDS', f: p => inr(p.tds) }, { h: 'Reimb.', f: p => inr(p.reimbursements) }, { h: 'Overtime', f: p => p.ot_pay ? `${p.ot_hours} h · ${inr(p.ot_pay)}` : '—' }, { h: 'Net pay', f: p => `<b>${inr(p.net)}</b>` }, { h: '', f: p => `<button class="btn sm" data-act="viewSlip" data-id="${p.id}">Slip</button>` }], o.rows, 'No employees with a salary set.')}</div>`;
 }
 PAGES.payroll = async () => {
   if (isAdmin()) return adminPayroll();
@@ -749,7 +753,7 @@ PAGES.settings = async () => {
     ${table([{ h: 'Name', f: d => esc(d.name) }, { h: '', f: d => `<button class="btn sm" data-act="delDept" data-id="${d.id}">Delete</button>` }], lk.departments)}</div>
     <div class="card"><div style="display:flex"><h2 class="grow">Leave policy</h2><button class="btn sm primary" data-act="addLT">+ Add type</button></div>
     ${table([{ h: 'Type', f: t => esc(t.name) }, { h: 'Days / year', f: t => t.days_per_year || 'Unlimited' }, { h: 'Paid', f: t => t.is_paid ? 'Yes' : 'No' }, { h: '', f: t => t.is_paid ? `<button class="btn sm" data-act="editLT" data-id="${t.id}" data-v="${t.days_per_year}">Edit</button>` : '' }], lk.leaveTypes)}</div></div>
-    <div class="card"><div style="display:flex"><h2 class="grow">Attendance rules</h2><button class="btn sm primary" data-act="editAttRules">Edit</button></div><dl class="kv"><dt>Office hours</dt><dd>${cfg.office_start} – ${cfg.office_end} <small class="muted">(${cfg.office_hours} hours)</small></dd><dt>Absent if no punch-in by</dt><dd>${cfg.grace_end}</dd><dt>Half day / Full day</dt><dd>${cfg.half_day_hours}h = half day · ${cfg.full_day_hours}h = full day <small class="muted">(under ${cfg.half_day_hours}h = absent)</small></dd><dt>Late relaxation</dt><dd>${cfg.grace_minutes} min, ${cfg.allowance_days} days a month <small class="muted">(then half day)</small></dd><dt>Short days (${cfg.full_day_hours}–${cfg.office_hours}h)</dt><dd>${cfg.allowance_days} a month count as full <small class="muted">(then half day)</small></dd></dl></div>
+    <div class="card"><div style="display:flex"><h2 class="grow">Attendance rules</h2><button class="btn sm primary" data-act="editAttRules">Edit</button></div><dl class="kv"><dt>Office hours</dt><dd>${cfg.office_start} – ${cfg.office_end} <small class="muted">(${cfg.office_hours} hours)</small></dd><dt>Absent if no punch-in by</dt><dd>${cfg.grace_end}</dd><dt>Half day / Full day</dt><dd>${cfg.half_day_hours}h = half day · ${cfg.full_day_hours}h = full day <small class="muted">(under ${cfg.half_day_hours}h: paid by the hour only)</small></dd><dt>Late relaxation</dt><dd>${cfg.grace_minutes} min, ${cfg.allowance_days} days a month <small class="muted">(then half day)</small></dd><dt>Short days (${cfg.full_day_hours}–${cfg.office_hours}h)</dt><dd>${cfg.allowance_days} a month count as full <small class="muted">(then half day)</small></dd><dt>Salary day</dt><dd>${cfg.salary_day}${ordSuffix(cfg.salary_day)} of every month</dd><dt>Overtime (over ${cfg.office_hours}h)</dt><dd>hourly rate + ${cfg.ot_premium}% extra</dd></dl></div>
     <div class="card"><div style="display:flex"><h2 class="grow">Holidays</h2><button class="btn sm primary" data-act="addHol">+ Add holiday</button></div>
     ${table([{ h: 'Date', f: h => fd(h.date) }, { h: 'Holiday', f: h => esc(h.name) }, { h: '', f: h => `<button class="btn sm" data-act="delHol" data-id="${h.id}">Delete</button>` }], hols)}</div>`;
 };
@@ -912,11 +916,11 @@ const A = {
   runPayroll: () => openForm({ title: 'Run payroll', intro: 'Creates (or recalculates) a draft for the month using attendance and approved leave. Review it, then finalize to publish payslips.', fields: [{ name: 'month', label: 'Month', type: 'month', value: S.payMonth || ym(new Date()), required: true }], submit: 'Calculate', onSubmit: async v => { const r = await api('POST', '/api/payroll/runs', v); setTimeout(() => A.viewRun(r.id), 100); } }),
   viewRun: async id => {
     const { run, slips } = await api('GET', '/api/payroll/runs/' + id); S._slips = slips; S._run = run;
-    modal(`<h2>Payroll — ${monthName(run.month)} ${badge(run.status)}</h2>${table([{ h: 'Employee', f: p => `<b>${esc(p.name)}</b><br><small class="muted">${esc(p.emp_code)}</small>` }, { h: 'Paid days', f: p => `${p.paid_days}/${p.working_days}` }, { h: 'Gross', f: p => inr(p.gross) }, { h: 'PF', f: p => inr(p.pf) }, { h: 'PT', f: p => inr(p.pt) }, { h: 'TDS', f: p => inr(p.tds) }, { h: 'Reimb.', f: p => inr(p.reimbursements) }, { h: 'Net', f: p => `<b>${inr(p.net)}</b>` }, { h: '', f: p => `<button class="btn sm" data-act="viewSlip" data-id="${p.id}">Slip</button>` }], slips)}
+    modal(`<h2>Payroll — ${monthName(run.month)} ${badge(run.status)}</h2>${table([{ h: 'Employee', f: p => `<b>${esc(p.name)}</b><br><small class="muted">${esc(p.emp_code)}</small>` }, { h: 'Paid days', f: p => `${p.paid_days}/${p.working_days}${p.partial_hours ? `<br><small class="muted">${p.partial_hours} h short-day</small>` : ''}` }, { h: 'Gross', f: p => inr(p.gross) }, { h: 'PF', f: p => inr(p.pf) }, { h: 'PT', f: p => inr(p.pt) }, { h: 'TDS', f: p => inr(p.tds) }, { h: 'Reimb.', f: p => inr(p.reimbursements) }, { h: 'Overtime', f: p => p.ot_pay ? `${p.ot_hours} h · ${inr(p.ot_pay)}` : '—' }, { h: 'Net', f: p => `<b>${inr(p.net)}</b>` }, { h: '', f: p => `<button class="btn sm" data-act="viewSlip" data-id="${p.id}">Slip</button>` }], slips)}
       <p><b>Total net payout: ${inr(slips.reduce((s, p) => s + p.net, 0))}</b></p><div class="actions"><button class="btn" data-act="exportRun">Export CSV</button>
       ${run.status === 'draft' ? `<button class="btn danger" data-act="delRun" data-id="${id}">Delete draft</button><button class="btn ok" data-act="finalizeRun" data-id="${id}">Finalize & publish</button>` : ''}<button class="btn" data-act="closeModal">Close</button></div>`, true);
   },
-  exportPayOv: () => csv(`payroll-overview-${S._payOv.month}.csv`, [['ID', 'Name', 'CTC', 'Working days', 'Paid days', 'Gross', 'PF', 'PT', 'TDS', 'Reimbursements', 'Net'], ...S._slips.map(p => [p.emp_code, p.name, p.ctc, p.working_days, p.paid_days, p.gross, p.pf, p.pt, p.tds, p.reimbursements, p.net])]),
+  exportPayOv: () => csv(`payroll-overview-${S._payOv.month}.csv`, [['ID', 'Name', 'CTC', 'Working days', 'Paid days', 'Short-day hours', 'Gross', 'PF', 'PT', 'TDS', 'Reimbursements', 'Overtime hours', 'Overtime pay', 'Net'], ...S._slips.map(p => [p.emp_code, p.name, p.ctc, p.working_days, p.paid_days, p.partial_hours, p.gross, p.pf, p.pt, p.tds, p.reimbursements, p.ot_hours, p.ot_pay, p.net])]),
   perfDetail: id => { S.perfEmp = id; S.tab.performance = 'team'; route(); },
   addCompanyExpense: () => openForm({ title: 'Add company expense', intro: 'Rent, equipment, subscriptions, travel — anything the company paid for.', fields: [{ name: 'category', label: 'Category', type: 'select', options: EXP_CATS.map(c => [c, c]), required: true }, { name: 'amount', label: 'Amount (₹)', type: 'number', min: 1, step: '0.01', required: true }, { name: 'date', label: 'Date', type: 'date', value: today(), required: true }, { name: 'description', label: 'Description / vendor', type: 'textarea' }], onSubmit: v => api('POST', '/api/expenses/company', v) }),
   exportExp: () => csv('expenses.csv', [['Date', 'Source', 'Category', 'Who', 'Description', 'Amount', 'Status'], ...S._expRows.map(x => [x.date, x.source, x.category, x.emp_name || x.added_by || 'Company', x.description, x.amount, x.status])]),
@@ -953,9 +957,11 @@ const A = {
     { name: 'grace_minutes', label: 'Late relaxation (minutes after start)', type: 'number', min: 0, max: 180, value: c.grace_minutes, required: true },
     { name: 'allowance_days', label: 'Relaxation / short days allowed per month', type: 'number', min: 0, max: 31, value: c.allowance_days, required: true },
     { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.25, value: c.half_day_hours, required: true },
-    { name: 'full_day_hours', label: 'Hours for a full day (short-day minimum)', type: 'number', step: '0.25', min: 0.25, value: c.full_day_hours, required: true }], onSubmit: v => api('PUT', '/api/settings/attendance', v) }); },
+    { name: 'full_day_hours', label: 'Hours for a full day (short-day minimum)', type: 'number', step: '0.25', min: 0.25, value: c.full_day_hours, required: true },
+    { name: 'salary_day', label: 'Salary day of the month (1-28)', type: 'number', min: 1, max: 28, value: c.salary_day, required: true },
+    { name: 'ot_premium_percent', label: 'Overtime extra (% on top of the hourly rate)', type: 'number', min: 0, max: 300, value: c.ot_premium, required: true }], onSubmit: v => api('PUT', '/api/settings/attendance', v) }); },
   attFilter: id => { S.attFilter = id; route(); },
-  exportRun: () => csv(`payroll-${S._run.month}.csv`, [['ID', 'Name', 'Working days', 'Paid days', 'Gross', 'PF', 'PT', 'TDS', 'Reimbursements', 'Net'], ...S._slips.map(p => [p.emp_code, p.name, p.working_days, p.paid_days, p.gross, p.pf, p.pt, p.tds, p.reimbursements, p.net])]),
+  exportRun: () => csv(`payroll-${S._run.month}.csv`, [['ID', 'Name', 'Working days', 'Paid days', 'Short-day hours', 'Gross', 'PF', 'PT', 'TDS', 'Reimbursements', 'Overtime hours', 'Overtime pay', 'Net'], ...S._slips.map(p => [p.emp_code, p.name, p.working_days, p.paid_days, p.partial_hours, p.gross, p.pf, p.pt, p.tds, p.reimbursements, p.ot_hours, p.ot_pay, p.net])]),
   finalizeRun: id => confirmBox('Finalize payroll? Payslips become visible to employees and the run is locked.', () => api('POST', `/api/payroll/runs/${id}/finalize`)),
   delRun: id => confirmBox('Delete this draft payroll run?', () => api('DELETE', `/api/payroll/runs/${id}`)),
   viewSlip: id => {

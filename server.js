@@ -4,6 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { all, get, run, tx, hash, verify, M, ctx, inCompany, dropTenant, deleteTenant, tenantExists, IS_PG, queries } = require('./db');
 const AE = require('./attendance-engine');
+const PE = require('./payroll-engine');
+const { annualTax, structure } = PE;
 const CO_COLS = 'id,code,name,db_file,status,created,admin_email,emp_prefix,logo_v';   // everything except the (large) logo image
 const { seedDemo, seedBasics, normalizeRoles, ensureLeaveTypes, PERMS } = require('./seed');
 
@@ -34,7 +36,7 @@ function dayStatus(empId, date, cfg, work) {
   const cover = kind => get(`SELECT t.name FROM leaves l JOIN leave_types t ON t.id=l.type_id WHERE l.emp_id=? AND l.status='approved' AND l.from_date<=? AND l.to_date>=? AND ${kind}`, empId, date, date);
   const lv = cover("t.kind!='wfh'"), wfh = !rec && work ? cover("t.kind='wfh'") : null;
   const dv = rec ? monthMap(empId, date.slice(0, 7), cfg).days[date] : !work ? (lv ? { status: 'leave' } : { status: 'off' }) : wfh ? { status: 'wfh', reason: 'Approved work from home' } : lv ? { status: 'leave' } : AE.derive(null, date, cfg, undefined, [], nowSec(), todayStr());
-  return { status: dv.status, reason: dv.reason || null, late: !!dv.late, in_progress: !!dv.in_progress, manual: !!rec?.manual, leave_type: lv?.name || null, check_in: rec?.check_in || null, check_out: rec?.check_out || null, hours: dv.minutes ? hrs1(dv.minutes) : null, worked_min: dv.minutes || 0, mode: rec?.mode || null };
+  return { status: dv.status, reason: dv.reason || null, late: !!dv.late, in_progress: !!dv.in_progress, manual: !!rec?.manual, leave_type: lv?.name || null, check_in: rec?.check_in || null, check_out: rec?.check_out || null, hours: dv.minutes ? hrs1(dv.minutes) : null, overtime: !dv.manual && dv.minutes > Math.round(cfg.office_hours * 60) && !dv.in_progress ? hrs1(dv.minutes - Math.round(cfg.office_hours * 60)) : 0, worked_min: dv.minutes || 0, mode: rec?.mode || null };
 }
 // Everything the employee dashboard punch widget needs.
 function buildPunch(empId) {
@@ -83,53 +85,17 @@ function nextEmpCode() {
   return p + String((r.m || 0) + 1).padStart(3, '0');
 }
 
-// ---------- payroll math (India, simplified; estimates only) ----------
-function annualTax(ctc) {
-  const taxable = Math.max(0, ctc - 75000);
-  const slabs = [[400000, 0], [800000, .05], [1200000, .10], [1600000, .15], [2000000, .20], [2400000, .25], [Infinity, .30]];
-  let tax = 0, prev = 0;
-  for (const [lim, r] of slabs) { if (taxable > prev) tax += (Math.min(taxable, lim) - prev) * r; prev = lim; }
-  if (taxable <= 1200000) tax = 0; // 87A rebate
-  return tax * 1.04;
-}
-function structure(ctc) {
-  const gross = ctc / 12, basic = gross * 0.4, hra = basic * 0.5, special = gross - basic - hra;
-  return { gross, basic, hra, special };
-}
+// ---------- payroll (the maths lives in payroll-engine.js; this only gathers the inputs) ----------
 function buildPayslip(emp, month) {
-  const first = month + '-01';
-  const last = iso(new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)));
-  const hols = holidaySet(), today = todayStr();
-  const cfg = attCfg();
-  const mm = monthMap(emp.id, month, cfg);
+  const first = month + '-01', last = iso(new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)));
+  const hols = holidaySet(), today = todayStr(), cfg = attCfg(), mm = monthMap(emp.id, month, cfg);
   const leaves = all(`SELECT l.from_date,l.to_date,t.is_paid FROM leaves l JOIN leave_types t ON t.id=l.type_id
     WHERE l.emp_id=? AND l.status='approved' AND l.from_date<=? AND l.to_date>=?`, emp.id, last, first);
-  let working = 0, lop = 0;
-  for (let d = first; d <= last; d = addDays(d, 1)) {
-    if (!isWorkday(d, hols)) continue;
-    working++;
-    if (d < emp.join_date) { lop++; continue; }
-    if (emp.exit_date && d > emp.exit_date) { lop++; continue; }
-    if (d > today) continue;
-    const dv = (mm.days[d] || AE.derive(null, d, cfg, undefined, [], nowSec(), today)).status;
-    if (dv === 'pending' || dv === 'office' || dv === 'wfh') continue;
-    if (dv === 'half') { lop += 0.5; continue; }
-    const lv = leaves.find(l => l.from_date <= d && l.to_date >= d);
-    if (lv && lv.is_paid) continue;
-    lop++;
-  }
-  const s = structure(emp.ctc), ratio = working ? (working - lop) / working : 0;
-  const basic = s.basic * ratio, hra = s.hra * ratio, special = s.special * ratio, gross = basic + hra + special;
-  const pf = Math.min(basic, 15000) * 0.12;
-  const pt = gross > 15000 ? 200 : 0;
-  const tds = annualTax(emp.ctc) / 12 * ratio;
   const reimb = get("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE emp_id=? AND status='approved' AND reimbursed_run IS NULL", emp.id).s;
-  const deductions = pf + pt + tds;
-  return { emp_id: emp.id, month, working_days: working, paid_days: working - lop, lop_days: lop,
-    basic: round(basic), hra: round(hra), special: round(special), gross: round(gross),
-    pf: round(pf), pt: round(pt), tds: round(tds), reimbursements: round(reimb),
-    deductions: round(deductions), net: round(gross - deductions + reimb) };
+  return PE.buildSlip({ emp, month, today, cfg, hols, leaves, reimb, dayOf: d => mm.days[d] || AE.derive(null, d, cfg, undefined, [], nowSec(), today) });
 }
+// adds the salary date and zero-fills the overtime fields of payslips saved before overtime existed
+const withPay = rows => { const sd = attCfg().salary_day; return rows.map(p => ({ ...p, ot_hours: p.ot_hours || 0, ot_pay: p.ot_pay || 0, partial_hours: p.partial_hours || 0, hourly_rate: p.hourly_rate || 0, pay_date: PE.payDate(p.month, sd) })); };
 
 // ---------- leave helpers ----------
 function leaveBalance(empId, year = +todayStr().slice(0, 4)) {
@@ -505,7 +471,10 @@ route('PUT', '/api/settings/attendance', ({ user, body }) => {
   if (!(g >= 0 && g <= 180)) bad('Late relaxation must be between 0 and 180 minutes');
   if (!(hh > 0 && hh < fh && fh <= officeH)) bad(`Hours must satisfy: half-day hours < full-day hours <= office hours (${officeH}h)`);
   if (!(al >= 0 && al <= 31)) bad('Allowance days must be between 0 and 31');
-  for (const [k, v] of Object.entries({ office_start: body.office_start, office_end: body.office_end, grace_minutes: g, half_day_hours: hh, full_day_hours: fh, allowance_days: al }))
+  const sd = body.salary_day === undefined ? undefined : Math.round(+body.salary_day), op = body.ot_premium_percent === undefined ? undefined : +body.ot_premium_percent;
+  if (sd !== undefined && !(sd >= 1 && sd <= 28)) bad('Salary day must be between 1 and 28');
+  if (op !== undefined && !(op >= 0 && op <= 300)) bad('Overtime extra must be between 0% and 300%');
+  for (const [k, v] of Object.entries({ office_start: body.office_start, office_end: body.office_end, grace_minutes: g, half_day_hours: hh, full_day_hours: fh, allowance_days: al, ...(sd !== undefined ? { salary_day: sd } : {}), ...(op !== undefined ? { ot_premium_percent: op } : {}) }))
     run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
   return attCfg();
 });
@@ -578,8 +547,8 @@ route('POST', '/api/payroll/runs', ({ user, body }) => {
     const emps = all(`SELECT * FROM employees WHERE ctc>0 AND join_date<=? AND (status!='exited' OR exit_date>=?)`, last, body.month + '-01');
     for (const e of emps) {
       const p = buildPayslip(e, body.month);
-      run(`INSERT INTO payslips(run_id,emp_id,month,working_days,paid_days,lop_days,basic,hra,special,gross,pf,pt,tds,reimbursements,deductions,net) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        run_.id, p.emp_id, p.month, p.working_days, p.paid_days, p.lop_days, p.basic, p.hra, p.special, p.gross, p.pf, p.pt, p.tds, p.reimbursements, p.deductions, p.net);
+      run(`INSERT INTO payslips(run_id,emp_id,month,working_days,paid_days,lop_days,basic,hra,special,gross,pf,pt,tds,reimbursements,deductions,net,ot_hours,ot_pay,partial_hours,hourly_rate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        run_.id, p.emp_id, p.month, p.working_days, p.paid_days, p.lop_days, p.basic, p.hra, p.special, p.gross, p.pf, p.pt, p.tds, p.reimbursements, p.deductions, p.net, p.ot_hours, p.ot_pay, p.partial_hours, p.hourly_rate);
     }
   });
   return { id: run_.id };
@@ -587,7 +556,7 @@ route('POST', '/api/payroll/runs', ({ user, body }) => {
 route('GET', '/api/payroll/runs/:id', ({ user, params }) => {
   need(can(user, 'payroll'));
   const r = get('SELECT * FROM payruns WHERE id=?', params.id); if (!r) bad('Not found', 404);
-  return { run: r, slips: all('SELECT p.*, e.name, e.emp_code, e.designation FROM payslips p JOIN employees e ON e.id=p.emp_id WHERE run_id=? ORDER BY e.emp_code', r.id) };
+  return { run: r, slips: withPay(all('SELECT p.*, e.name, e.emp_code, e.designation FROM payslips p JOIN employees e ON e.id=p.emp_id WHERE run_id=? ORDER BY e.emp_code', r.id)) };
 });
 route('POST', '/api/payroll/runs/:id/finalize', ({ user, params }) => {
   need(can(user, 'payroll'));
@@ -608,8 +577,8 @@ route('DELETE', '/api/payroll/runs/:id', ({ user, params }) => {
 });
 route('GET', '/api/payslips', ({ user, query }) => {
   const id = +query.emp_id || user.id; need(can(user, 'payroll') || id === user.id);
-  return all(`SELECT p.*, e.name, e.emp_code, e.designation, e.pan, e.bank_account, e.join_date, d.name dept FROM payslips p JOIN payruns r ON r.id=p.run_id
-    JOIN employees e ON e.id=p.emp_id LEFT JOIN departments d ON d.id=e.dept_id WHERE p.emp_id=? AND r.status='finalized' ORDER BY p.month DESC`, id);
+  return withPay(all(`SELECT p.*, e.name, e.emp_code, e.designation, e.pan, e.bank_account, e.join_date, d.name dept FROM payslips p JOIN payruns r ON r.id=p.run_id
+    JOIN employees e ON e.id=p.emp_id LEFT JOIN departments d ON d.id=e.dept_id WHERE p.emp_id=? AND r.status='finalized' ORDER BY p.month DESC`, id));
 });
 route('GET', '/api/salary-structure', ({ user, query }) => {
   const id = +query.emp_id || user.id; need(can(user, 'payroll') || id === user.id);
@@ -870,17 +839,17 @@ route('GET', '/api/attendance/overview', ({ user, query }) => {
 route('GET', '/api/payroll/overview', ({ user, query }) => {
   need(can(user, 'payroll'));
   const month = validMonth(query.month), first = month + '-01', last = iso(new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)));
-  const run_ = get('SELECT * FROM payruns WHERE month=?', month);
+  const cfg0 = attCfg(), run_ = get('SELECT * FROM payruns WHERE month=?', month);
   const saved = run_ ? Object.fromEntries(all('SELECT * FROM payslips WHERE run_id=?', run_.id).map(p => [p.emp_id, p])) : {};
   const emps = all(`SELECT e.*, d.name dept FROM employees e LEFT JOIN departments d ON d.id=e.dept_id WHERE e.ctc>0 AND e.join_date<=? AND (e.status!='exited' OR e.exit_date>=?) ORDER BY e.emp_code`, last, first);
   const rows = emps.map(e => {
     const p = saved[e.id] || buildPayslip(e, month);
     return { id: e.id, emp_id: e.id, emp_code: e.emp_code, name: e.name, designation: e.designation, dept: e.dept, pan: e.pan, bank_account: e.bank_account, ctc: e.ctc, month,
       working_days: p.working_days, paid_days: p.paid_days, lop_days: p.lop_days, basic: p.basic, hra: p.hra, special: p.special, gross: p.gross, pf: p.pf, pt: p.pt, tds: p.tds,
-      reimbursements: p.reimbursements, deductions: p.deductions, net: p.net };
+      reimbursements: p.reimbursements, deductions: p.deductions, net: p.net, ot_hours: p.ot_hours || 0, ot_pay: p.ot_pay || 0, partial_hours: p.partial_hours || 0, hourly_rate: p.hourly_rate || 0, pay_date: PE.payDate(month, cfg0.salary_day) };
   });
   const sum = k => round(rows.reduce((t, r) => t + r[k], 0));
-  return { month, run: run_ ? { id: run_.id, status: run_.status } : null, rows, totals: { employees: rows.length, gross: sum('gross'), deductions: sum('deductions'), reimbursements: sum('reimbursements'), net: sum('net'), annualCtc: sum('ctc') } };
+  return { month, run: run_ ? { id: run_.id, status: run_.status } : null, rows, totals: { employees: rows.length, gross: sum('gross'), deductions: sum('deductions'), reimbursements: sum('reimbursements'), net: sum('net'), annualCtc: sum('ctc'), ot_pay: sum('ot_pay'), ot_hours: sum('ot_hours'), pay_date: PE.payDate(month, cfg0.salary_day) } };
 });
 
 route('GET', '/api/performance/ranking', ({ user, query }) => {
