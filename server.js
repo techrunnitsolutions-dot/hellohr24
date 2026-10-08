@@ -1010,7 +1010,7 @@ const handler = (req, res) => {
     let f = path.normalize(path.join(PUB, url.pathname === '/' ? 'index.html' : url.pathname));
     if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, 'index.html');
     res.writeHead(200, { 'Content-Type': (MIME[path.extname(f)] || 'application/octet-stream') + '; charset=utf-8' });
-    return fs.createReadStream(f).pipe(res);
+    const rs = fs.createReadStream(f); rs.on('error', () => { if (!res.headersSent) res.writeHead(404); res.end('Not found'); }); return rs.pipe(res);
   }
 
   let raw = '';

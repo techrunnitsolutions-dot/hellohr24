@@ -1,8 +1,11 @@
 {
   "functions": {
     "api/index.js": {
-      "includeFiles": "{public/**,db.js,server.js,seed.js,attendance-engine.js}",
+      "includeFiles": "public/**",
       "maxDuration": 60
+    },
+    "api/health.js": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
