@@ -42,6 +42,7 @@
       + (iphoneOrIpad && !safari ? '<div class="gwarn">For the best result open this page in <b>Safari</b>. <button class="btn sm" type="button" data-x="copy">Copy link</button></div>' : '')
       + '<div class="gsteps">' + step(1, SHARE_ICON, 'Tap the <b>Share</b> button ' + (ipad ? 'at the top of Safari' : 'at the bottom of Safari') + '.')
       + step(2, PLUS_ICON, 'Scroll down and tap <b>Add to Home Screen</b>.') + step(3, '<b style="color:#2563eb">Add</b>', 'Tap <b>Add</b> (top right). The HelloHR icon now sits on your home screen.') + '</div>'
+      + (iphoneOrIpad && safari ? '<div class="gprof"><b>Easier way:</b> tap the button, choose <b>Allow</b>, then open <b>Settings → Profile Downloaded → Install</b>. iPhone will say the profile is "Not Signed" because it is not from the App Store; it only adds the HelloHR icon and changes nothing else.<br><a class="btn sm" href="/downloads/HelloHR.mobileconfig" style="margin-top:8px;display:inline-block">Add icon with one approval</a></div>' : '')
       + '<div class="actions" style="gap:8px"><button class="btn primary" type="button" data-x="ok">Got it</button></div></div>'
       + (iphoneOrIpad ? '<div class="garrow ' + (ipad ? 'top' : 'bottom') + '" aria-hidden="true">Tap Share <span>' + (ipad ? '↗' : '↓') + '</span></div>' : '');
     o.addEventListener('click', e => { const x = e.target.dataset && e.target.dataset.x;

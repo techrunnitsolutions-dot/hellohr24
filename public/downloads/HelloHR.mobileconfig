@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key><string>com.apple.webClip.managed</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>PayloadIdentifier</key><string>com.techrunn.hellohr.webclip</string>
+      <key>PayloadUUID</key><string>6F1C6E0E-3D52-4B7C-9C1A-5B7A2D9E4A11</string>
+      <key>PayloadDisplayName</key><string>HelloHR</string>
+      <key>Label</key><string>HelloHR</string>
+      <key>URL</key><string>https://hellohr24.vercel.app/</string>
+      <key>IsRemovable</key><true/>
+      <key>FullScreen</key><true/>
+      <key>Precomposed</key><true/>
+      <key>Icon</key>
+      <data>
+iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAYAAAA9zQYyAAADwUlEQVR42u3SW1JTURCG0TM6EUGR
+i4abIohDJyQhIcygfd6Pqdo5dbqzuuqbwN9rOPv0ElKVBiMIaAloCWgJaB0y6KOXkKoEtICWJgv6
++9FLSFUCWkBL0wX9+SWkKgEtoKUJg56HVCWgVQz08TykKg3nx/OQqgS0gJaAloCWdgX9ZR5SlYAW
+0BLQ0higL77MQ6oS0CoG+mQeUpWGi5PXkKoEtICWgJZGAX36GlKVgFYt0JenryFVCWgBLQEtjQL6
+62tkrddl3sAmbUADDbTn2QRoz7MJ0J5nkx1BX31bRNZ6XeYNbNIGNNBAe55NgPY8mwDteTYBGuiD
+Bn22iKx1e17iDWzSBjTQQHueTSYL+sfZIrLW6zJvYJM2oIEG2vNsMl3Q3xeRtW7PS7yBTdqABhpo
+z7PJhEEvI2v9nrcs06FvAjTQxUCfLyNr3Z6XeAObtA0/z5eRtV6XeQObtAENNNCeZxOgPc8mQHue
+TXYFfbGMrHV7XuINbNIGNNBAe55NgPY8m4wBenaxjKz1uswb2KQNaKCLgb5cRta6PS/xBjZpG2aX
+q8hav+etynTomwANNNCeZxOgPc8mo4C+WkXWuj0v8QY2aQMa6Fqgr69WkTW3v8tqAmgHNNBAAw00
+0KOA/rGKrLk9gk5qAmgHNNBAAw000EADDfSOoG9+vkXW3P4uqwmgHdBAAw000EADDTTQQLuDBj17
+i6y5PYJOagJoBzTQQE8W9O3sLbLm9ndZTQCd+Hk2ARro8qCv3yJr3Z6XeAObtAENNNCeZ5MJg15H
+1vo9b12mQ98EaKCLgb5ZR9a6PS/xBjZpG+5u1pG1Xpd5A5u0AQ000J5nE6A9zyZAe55NdgV9u46s
+dXte4g1s0gY00EB7nk2A9jybjAH6/nYdWet1mTewSRvQQBcDfbeOrHV7XuINbNI23N9tImv9nrcp
+06FvAjTQQHueTYD2PJuMAvp+E1nr9rzEG9ikDWiga4H+db+JrPW6zBvYpA1ooIH2PJsA7Xk2GQX0
+r01krdvzEm9gkzaggQba82wCtOfZBGjPs8mOoH//fo+s9brMG9ikDWiggfY8mwDteTYB2vNsAjTQ
+Bw364T2kKgEtoKXJgn54eA+pSkALaGm6oP+8h1QloAW0NGHQ25CqBLSKgX7chlSl4c/jNqQqAS2g
+JaAloKVdQT9tQ6oS0AJaAloaA/Tj0zakKgGtYqD/bkOq0vD49yOkKgEtoCWgpVFAP3+EVCWgVQv0
+0/NHSFUCWkBLQEujgP73EVKVgBbQEtAS0NJu/QdD8Rvp4Jli1wAAAABJRU5ErkJggg==
+      </data>
+    </dict>
+  </array>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadIdentifier</key><string>com.techrunn.hellohr</string>
+  <key>PayloadUUID</key><string>0B7D2B58-8A64-4F3B-A1D0-2C9F6E3B7C22</string>
+  <key>PayloadDisplayName</key><string>HelloHR app icon</string>
+  <key>PayloadDescription</key><string>Adds the HelloHR employee portal icon to your home screen. It does not change any other setting on your phone.</string>
+  <key>PayloadOrganization</key><string>TechRunn IT Solutions</string>
+  <key>PayloadRemovalDisallowed</key><false/>
+</dict>
+</plist>

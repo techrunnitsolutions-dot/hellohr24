@@ -168,3 +168,4 @@ html{-webkit-text-size-adjust:100%}
 .garrow.bottom{bottom:10px}.garrow.top{top:10px}
 .garrow span{display:inline-block;font-size:30px;animation:gbounce 1s infinite}
 @keyframes gbounce{0%,100%{transform:translateY(0)}50%{transform:translateY(7px)}}
+.gprof{background:#eef2ff;border-radius:12px;padding:10px 12px;font-size:13px;line-height:1.4;margin-bottom:10px}

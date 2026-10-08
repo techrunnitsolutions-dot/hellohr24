@@ -1210,7 +1210,7 @@ for (const c of M.all('SELECT * FROM companies WHERE admin_email IS NULL OR emp_
 for (const c of M.all('SELECT ' + CO_COLS + ' FROM companies')) inCompany(c, () => { normalizeRoles(); ensureLeaveTypes(); });
 
 // ---------- server ----------
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive' };
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive', '.mobileconfig': 'application/x-apple-aspen-config' };
 
 const handler = (req, res) => {
   if (process.env.HH_DEBUG) { const q0 = queries(), t0 = Date.now(); res.on('finish', () => console.log(`${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${queries() - q0} db-queries ${Date.now() - t0}ms`)); }
@@ -1225,7 +1225,7 @@ const handler = (req, res) => {
     let f = path.normalize(path.join(PUB, url.pathname === '/' ? 'index.html' : url.pathname));
     if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, 'index.html');
     const ext = path.extname(f), ct = MIME[ext] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': /^(text\/|application\/(json|manifest))/.test(ct) ? ct + '; charset=utf-8' : ct, ...(ext === '.apk' ? { 'Content-Disposition': 'attachment; filename="HelloHR.apk"' } : {}), ...(path.basename(f) === 'sw.js' ? { 'Cache-Control': 'no-cache' } : {}) });
+    res.writeHead(200, { 'Content-Type': /^(text\/|application\/(json|manifest))/.test(ct) ? ct + '; charset=utf-8' : ct, ...(ext === '.apk' ? { 'Content-Disposition': 'attachment; filename="HelloHR.apk"' } : ext === '.mobileconfig' ? { 'Content-Disposition': 'attachment; filename="HelloHR.mobileconfig"' } : {}), ...(path.basename(f) === 'sw.js' ? { 'Cache-Control': 'no-cache' } : {}) });
     const rs = fs.createReadStream(f); rs.on('error', () => { if (!res.headersSent) res.writeHead(404); res.end('Not found'); }); return rs.pipe(res);
   }
 
