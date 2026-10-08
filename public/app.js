@@ -377,7 +377,7 @@ PAGES.dashboard = async () => {
     <div class="card"><h2>📢 Announcements</h2>${d.announcements.map(a => `<div style="margin-bottom:12px"><b>${esc(a.title)}</b> <span class="muted">· ${fd(a.created)} · ${esc(a.author)}</span><div>${esc(a.body)}</div></div>`).join('') || '<div class="empty">No announcements</div>'}</div>
     <div>
       <div class="card"><h2>🎉 Upcoming holidays</h2>${d.holidays.map(h => `<div>${fd(h.date)} — <b>${esc(h.name)}</b></div>`).join('') || '<span class="muted">None upcoming</span>'}</div>
-      <div class="card"><h2>🎂 Birthdays this month</h2>${d.birthdays.map(b => `<div>${esc(b.name)} <span class="muted">· ${fd(b.dob).slice(0, 6)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
+      <div class="card staffonly"><h2>🎂 Birthdays this month</h2>${d.birthdays.map(b => `<div>${esc(b.name)} <span class="muted">· ${fd(b.dob).slice(0, 6)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
     </div>
   </div>
   <div class="grid g2 personal">
@@ -836,17 +836,18 @@ function buildNav() {
   { let fav = document.querySelector('link[rel=icon]'); if (!fav) { fav = document.createElement('link'); fav.rel = 'icon'; document.head.appendChild(fav); } fav.href = co && co.logo_v ? `/api/logo/${encodeURIComponent(co.code)}?v=${co.logo_v}` : 'data:,'; }
   $('#banner').innerHTML = localStorage.getItem('hh_master_token') ? '<button class="btn sm danger" data-act="backToMaster">← Back to master panel</button>' : (S.user.company ? logoImg(S.user.company, 'sm') + '<b>' + esc(S.user.company.name) + '</b>' : '<b>Platform master panel</b>');
   if (isMaster()) { $('#nav').innerHTML = '<div class="sec">Platform</div><a href="#/companies" data-nav="companies">🏢 Companies</a><a href="#/maccount" data-nav="maccount">🔐 My account</a>'; $('#userbox').innerHTML = '<div style="text-align:right"><b>' + esc(S.user.name) + '</b><br><small class="muted">MASTER</small></div><button class="btn sm" data-act="logout">Sign out</button>'; return; }
-  $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['leave', 'learning', 'myprofile'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
+  $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['leave', 'learning', 'myprofile'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && !(n[0] === 'employees' && !(isStaff() || can('team'))) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
   $('#userbox').innerHTML = `<div style="text-align:right"><b>${esc(S.user.name)}</b><br><small class="muted">${esc(S.user.role.toUpperCase())} · ${esc(S.user.emp_code)}</small></div><a href="#/profile" class="avatar" title="My account">${initials(S.user.name)}</a><button class="btn sm" data-act="logout">Sign out</button>`;
 }
 async function route() {
   if (!S.user) return;
   const [, page = isMaster() ? 'companies' : 'dashboard', arg] = location.hash.split('/');
   if (page === 'attendance' && !isAdmin() && !isMaster()) { location.hash = '#/dashboard'; return; }
+  if (!isMaster() && ((page === 'employees' && !(isStaff() || can('team'))) || (page === 'employee' && +arg !== S.user.id && !(isStaff() || can('team'))))) { location.hash = '#/dashboard'; return; }
   const fn = (isMaster() ? MPAGES : PAGES)[page] || (isMaster() ? MPAGES.companies : PAGES.dashboard);
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === (page === 'employee' ? 'employees' : page)));
   $('#sidebar').classList.remove('open'); $('#backdrop').classList.remove('show');
-  try { $('#main').innerHTML = await fn(arg); if (isAdmin()) document.querySelectorAll('#main .personal').forEach(n => n.remove()); labelTables($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="err">${esc(e.message)}</p></div>`; }
+  try { $('#main').innerHTML = await fn(arg); if (isAdmin()) document.querySelectorAll('#main .personal').forEach(n => n.remove()); if (!isStaff()) document.querySelectorAll('#main .staffonly').forEach(n => n.remove()); labelTables($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="err">${esc(e.message)}</p></div>`; }
   if (page === 'profile' || page === 'maccount') $('#pwForm')?.addEventListener('submit', async e => { e.preventDefault(); const f = e.target.elements; try { await api('POST', page === 'maccount' ? '/api/master/change-password' : '/api/change-password', { current: f.current.value, next: f.next.value }); toast('Password updated'); e.target.reset(); $('#pwErr').textContent = ''; } catch (er) { $('#pwErr').textContent = er.message; } });
 }
 function logoutLocal() { document.title = 'HelloHR - HR Management Portal';  localStorage.removeItem('hh_master_token'); S.user = null; S.token = null; localStorage.removeItem('hh_token'); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); }

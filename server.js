@@ -197,11 +197,14 @@ route('POST', '/api/change-password', ({ user, body }) => {
 });
 
 // lookups & dashboard
-route('GET', '/api/lookups', () => ({
-  departments: all('SELECT * FROM departments ORDER BY name'),
-  leaveTypes: all('SELECT * FROM leave_types ORDER BY id'),
-  employees: all("SELECT id,emp_code,name,role,designation FROM employees WHERE status!='exited' ORDER BY name"),
-}));
+route('GET', '/api/lookups', ({ user }) => {
+  const staff = isStaff(user), team = new Set(teamIds(user));
+  return {
+    departments: all('SELECT * FROM departments ORDER BY name'),
+    leaveTypes: all('SELECT * FROM leave_types ORDER BY id'),
+    employees: all("SELECT id,emp_code,name,role,designation FROM employees WHERE status!='exited' ORDER BY name").filter(e => staff || e.id === user.id || team.has(e.id)),
+  };
+});
 route('GET', '/api/dashboard', ({ user }) => {
   const today = todayStr(), month = today.slice(0, 7), out = {};
   out.announcements = all('SELECT a.*, e.name author FROM announcements a LEFT JOIN employees e ON e.id=a.author_id ORDER BY a.id DESC LIMIT 5');
@@ -211,7 +214,7 @@ route('GET', '/api/dashboard', ({ user }) => {
   out.pendingRequests = reviewableRequests(user).filter(r => r.status === 'pending').length;
   if (user.role !== 'admin') out.profilePct = completion(getProfile(user.id), docList(user.id)).pct;
   out.policies = { attendance: attCfg(), leaveTypes: all('SELECT name,days_per_year,is_paid,kind FROM leave_types ORDER BY id') };
-  out.birthdays = all(`SELECT name, dob FROM employees WHERE status!='exited' AND dob IS NOT NULL AND substr(dob,6,2)=?`, today.slice(5, 7));
+  out.birthdays = isStaff(user) ? all(`SELECT name, dob FROM employees WHERE status!='exited' AND dob IS NOT NULL AND substr(dob,6,2)=?`, today.slice(5, 7)) : [];
   out.myGoals = all("SELECT * FROM goals WHERE emp_id=? AND status='active'", user.id);
   out.myCourses = all('SELECT c.title, en.progress FROM enrollments en JOIN courses c ON c.id=en.course_id WHERE en.emp_id=?', user.id);
   if (isStaff(user)) {
@@ -250,14 +253,15 @@ function shape(user, e, team) {
   return e.id === user.id || can(user, 'payroll') ? e : without(e, ['ctc']);
 }
 route('GET', '/api/employees', ({ user, query }) => {
-  const team = new Set(teamIds(user));
+  const team = new Set(teamIds(user)), staff = isStaff(user);
   const live = can(user, 'attendance'), cfg = live && attCfg(), work = isWorkday(todayStr(), holidaySet()), profPct = can(user, 'employees') ? profileCompletionMap() : null;
-  return all(EMP_SQL + ' ORDER BY e.emp_code').map(publicEmp).map(e => shape(user, e, team)).filter(e => !query.status || e.status === query.status)
+  return all(EMP_SQL + ' ORDER BY e.emp_code').map(publicEmp).filter(e => staff || e.id === user.id || team.has(e.id)).map(e => shape(user, e, team)).filter(e => !query.status || e.status === query.status)
     .map(e => live && e.status !== 'exited' && e.role !== 'admin' ? { ...e, today: dayStatus(e.id, todayStr(), cfg, work) } : e)
     .map(e => profPct ? { ...e, profile_pct: profPct(e.id) } : e);
 });
 route('GET', '/api/employees/:id', ({ user, params }) => {
   const e = get(EMP_SQL + ' WHERE e.id=?', params.id); if (!e) bad('Not found', 404);
+  if (!(isStaff(user) || e.id === user.id || teamIds(user).includes(e.id))) bad('Not found', 404);   // regular employees cannot look at colleagues
   const pub = shape(user, publicEmp(e), new Set(teamIds(user)));
   const assets = pub.pan !== undefined ? all('SELECT * FROM assets WHERE assigned_to=?', e.id) : [];
   if (can(user, 'attendance') && e.role !== 'admin' && e.status !== 'exited') pub.today = dayStatus(e.id, todayStr(), attCfg(), isWorkday(todayStr(), holidaySet()));
