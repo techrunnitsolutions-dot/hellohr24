@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HelloHR - HR Management Portal</title>
+<meta name="theme-color" content="#111827">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="login" class="hidden">
+  <form id="loginForm" class="login-card">
+    <div class="brand big">Hello<span>HR</span></div>
+    <h2 id="loginTitle" style="margin:0 0 4px"></h2><p class="muted" id="loginSub"></p>
+    <label><span id="idLabel">Email</span><input name="identifier" required autofocus autocapitalize="none" autocomplete="username"></label>
+    <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+    <div id="loginErr" class="err"></div>
+    <button class="btn primary block">Sign in</button>
+    <div class="demo muted" id="demoBox"></div>
+  </form>
+</div>
+<div id="app" class="hidden">
+  <aside id="sidebar"><div class="brand">Hello<span>HR</span></div><nav id="nav"></nav></aside>
+  <div class="content">
+    <header>
+      <button id="menuBtn" class="btn ghost">☰</button>
+      <div id="banner"></div><div class="grow"></div>
+      <div id="userbox"></div>
+    </header>
+    <main id="main"></main>
+  </div>
+</div>
+<div id="backdrop"></div>
+<div id="modalRoot"></div>
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

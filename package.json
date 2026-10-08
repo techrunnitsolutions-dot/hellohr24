@@ -1,0 +1,1 @@
+﻿{"name":"hellohr","version":"1.0.0","description":"HelloHR - HRMS portal","main":"server.js","scripts":{"start":"node server.js"},"engines":{"node":">=22.5"}}
