@@ -145,3 +145,16 @@ html{-webkit-text-size-adjust:100%}
 @media(max-width:760px){.timer{font-size:34px}.punchbtn{width:100%}.pticks i{display:none}}
 @media(max-width:380px){.g4{grid-template-columns:1fr}}
 @media print{#sidebar,header,.no-print,.page-head,.tabs{display:none!important}body{background:#fff}main{padding:0}.card{border:0}}
+
+/* app download buttons + install help */
+.appdl{margin-top:18px;padding-top:16px;border-top:1px solid #e5e7eb;text-align:center}
+.appdl-t{font-size:12px;color:#6b7280;margin-bottom:10px}
+.appdl-b{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.storebtn{display:flex;align-items:center;gap:9px;background:#111827;color:#fff;border:0;border-radius:10px;padding:8px 16px;cursor:pointer;font:inherit;text-align:left;min-width:140px}
+.storebtn:hover{background:#1f2937}
+.storebtn span{display:flex;flex-direction:column;line-height:1.15}
+.storebtn small{font-size:10px;opacity:.8}.storebtn b{font-size:15px}
+.appmodal{position:fixed;inset:0;background:rgba(17,24,39,.55);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
+.appmodal-card{background:#fff;border-radius:14px;padding:22px;max-width:420px;width:100%;max-height:90vh;overflow:auto}
+.appmodal-card ol{padding-left:20px;line-height:1.7}
+.appmodal-card .actions{display:flex;justify-content:flex-end;margin-top:12px}

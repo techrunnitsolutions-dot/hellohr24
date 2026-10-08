@@ -1,0 +1,11 @@
+{
+  "appId": "com.techrunn.hellohr",
+  "appName": "HelloHR",
+  "webDir": "www",
+  "server": {
+    "url": "https://hellohr24.vercel.app",
+    "cleartext": false
+  },
+  "android": { "allowMixedContent": false },
+  "ios": { "contentInset": "always" }
+}
