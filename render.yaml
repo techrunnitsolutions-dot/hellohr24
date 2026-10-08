@@ -1,0 +1,29 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo. You will be asked for MASTER_EMAIL and MASTER_PASSWORD (kept as secrets, never in git).
+services:
+  - type: web
+    name: hellohr
+    runtime: node
+    plan: starter            # persistent disks need a paid instance
+    buildCommand: echo "no build step"
+    startCommand: node server.js
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: SEED_DEMO
+        value: "0"
+      - key: MASTER_NAME
+        value: Platform Owner
+      - key: MASTER_EMAIL
+        sync: false
+      - key: MASTER_PASSWORD
+        sync: false
+    disk:
+      name: hellohr-data
+      mountPath: /var/data
+      sizeGB: 1

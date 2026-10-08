@@ -969,8 +969,19 @@ mroute('POST', '/api/master/change-password', ({ user, body }) => {
 });
 
 // ---------- bootstrap ----------
-if (!M.get('SELECT id FROM masters')) { M.run('INSERT INTO masters(name,email,password_hash) VALUES(?,?,?)', 'Platform Owner', 'master@hellohr.com', hash('master123')); console.log('Created master account master@hellohr.com / master123 - change it after first login.'); }
-if (!M.get('SELECT id FROM companies')) {
+// Master (platform owner) account. In production set MASTER_EMAIL / MASTER_PASSWORD (and optionally MASTER_NAME) as environment variables -
+// credentials never live in the repository. The built-in dev default is only created outside production.
+const MASTER_EMAIL = (process.env.MASTER_EMAIL || '').trim(), MASTER_PASSWORD = process.env.MASTER_PASSWORD || '';
+if (MASTER_EMAIL && MASTER_PASSWORD) {
+  if (!M.get('SELECT id FROM masters WHERE lower(email)=lower(?)', MASTER_EMAIL)) {
+    M.run('INSERT INTO masters(name,email,password_hash) VALUES(?,?,?)', process.env.MASTER_NAME || 'Platform Owner', MASTER_EMAIL, hash(MASTER_PASSWORD));
+    console.log('Created master account ' + MASTER_EMAIL);
+  }
+} else if (!M.get('SELECT id FROM masters')) {
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL) console.error('No master account: set MASTER_EMAIL and MASTER_PASSWORD environment variables.');
+  else { M.run('INSERT INTO masters(name,email,password_hash) VALUES(?,?,?)', 'Platform Owner', 'master@hellohr.com', hash('master123')); console.log('Created dev master account master@hellohr.com / master123 - change it after first login.'); }
+}
+if (!M.get('SELECT id FROM companies') && process.env.SEED_DEMO !== '0') {
   const legacy = path.join(__dirname, 'hellohr.db');
   if (fs.existsSync(legacy)) M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company',?,?)", legacy, todayStr());
   else { M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company','demo.db',?)", todayStr()); inCompany(M.get("SELECT * FROM companies WHERE code='demo'"), seedDemo); }
@@ -988,6 +999,7 @@ for (const c of M.all('SELECT * FROM companies')) inCompany(c, () => { normalize
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' };
 
 const server = http.createServer((req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'SAMEORIGIN'); res.setHeader('Referrer-Policy', 'same-origin');
   const url = new URL(req.url, 'http://x');
   const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 

@@ -50,3 +50,10 @@ Admin -> **Office location** (or the button on the Attendance page): set the off
 Once set, employees can punch in/out only within that distance; the browser shares their GPS position with each punch. **Geo-fencing** lets you pick employees who may punch from anywhere -
 their location is still stored and appears in **Punch history** (Attendance -> Punch locations / Punch history) with the date, flagged "Away from office". Clear the location to switch the check off.
 Browsers only share location on HTTPS or localhost pages, so use HTTPS when you deploy. Work-from-home punches need an approved WFH request (or the employee's work type set to Work from home) once an office location is set.
+
+## Deploying (needs a persistent disk - Vercel/serverless can't keep the SQLite files)
+Environment variables: `MASTER_EMAIL`, `MASTER_PASSWORD` (creates the platform owner on first start; set them as secrets, never commit them), `DATA_DIR` (folder on the persistent disk),
+`SEED_DEMO=0` (skip demo company), `NODE_ENV=production`, `PORT` (set by the host).
+- **Render:** New -> Blueprint -> select this repo (uses `render.yaml`, 1 GB disk) -> enter MASTER_EMAIL / MASTER_PASSWORD.
+- **Railway / Fly.io / any Docker host:** deploy the `Dockerfile`, attach a volume at `/data`, set MASTER_EMAIL / MASTER_PASSWORD.
+Requires Node 22.13+ (uses the built-in SQLite). Serve over HTTPS so browsers allow the office-location (GPS) check.

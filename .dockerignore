@@ -1,0 +1,9 @@
+.git
+node_modules
+*.db
+*.db-wal
+*.db-shm
+data
+out.txt
+err.txt
+Screenshot*.png

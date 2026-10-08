@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS enrollments(id INTEGER PRIMARY KEY, emp_id INTEGER, c
 `;
 
 const als = new AsyncLocalStorage();
-const DATA = path.join(__dirname, 'data');
+const DATA = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
 fs.mkdirSync(DATA, { recursive: true });
 const open = (file, schema) => { const d = new DatabaseSync(file); d.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;'); d.exec(schema); return d; };
 const MASTER_SCHEMA = `
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS masters(id INTEGER PRIMARY KEY, name TEXT, email TEXT
 CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, db_file TEXT NOT NULL, status TEXT DEFAULT 'active', created TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, company_id INTEGER, emp_id INTEGER, master_id INTEGER, created TEXT);
 `;
-const master = open(path.join(__dirname, 'master.db'), MASTER_SCHEMA);
+const master = open(path.join(process.env.DATA_DIR ? DATA : __dirname, 'master.db'), MASTER_SCHEMA);
 for (const col of ['admin_email', 'emp_prefix'])
   if (!master.prepare('PRAGMA table_info(companies)').all().some(c => c.name === col)) master.exec('ALTER TABLE companies ADD COLUMN ' + col + ' TEXT');
 master.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_co_admin ON companies(lower(admin_email)); CREATE UNIQUE INDEX IF NOT EXISTS ux_co_prefix ON companies(upper(emp_prefix));');
