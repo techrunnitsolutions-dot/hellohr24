@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { all, get, run, tx, hash, verify, M, ctx, inCompany, dropTenant, DATA } = require('./db');
+const { all, get, run, tx, hash, verify, M, ctx, inCompany, dropTenant, deleteTenant, tenantExists, IS_PG, queries } = require('./db');
 const AE = require('./attendance-engine');
 const { seedDemo, seedBasics, normalizeRoles, ensureLeaveTypes, PERMS } = require('./seed');
 
@@ -11,12 +11,15 @@ const PUB = path.join(__dirname, 'public');
 
 // ---------- helpers ----------
 const iso = d => d.toISOString().slice(0, 10);
-const todayStr = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`; };
-const nowTime = () => { const n = new Date(); return `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`; };
+const TZ = process.env.APP_TZ || 'Asia/Kolkata';
+const tzFmt = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+const tzNow = () => { const o = {}; for (const p of tzFmt.formatToParts(new Date())) o[p.type] = p.value; return o; };
+const todayStr = () => { const o = tzNow(); return `${o.year}-${o.month}-${o.day}`; };
+const nowTime = () => { const o = tzNow(); return `${o.hour}:${o.minute}`; };
 const utc = s => new Date(s + 'T00:00:00Z');
 // ---- automatic attendance engine (the rules themselves live in attendance-engine.js) ----
 const toMin = AE.toMin, fmtMin = AE.fmtMin;
-const nowSec = () => { const n = new Date(); return [n.getHours(), n.getMinutes(), n.getSeconds()].map(x => String(x).padStart(2, '0')).join(':'); };
+const nowSec = () => { const o = tzNow(); return `${o.hour}:${o.minute}:${o.second}`; };
 const attCfg = () => AE.normCfg(Object.fromEntries(all('SELECT key,value FROM settings').map(x => [x.key, x.value])));
 const hrs1 = m => Math.round(m / 6) / 10;
 function monthMap(empId, month, cfg, nowS = nowSec(), todayS = todayStr()) {
@@ -128,7 +131,7 @@ function buildPayslip(emp, month) {
 }
 
 // ---------- leave helpers ----------
-function leaveBalance(empId, year = new Date().getFullYear()) {
+function leaveBalance(empId, year = +todayStr().slice(0, 4)) {
   return all("SELECT * FROM leave_types WHERE kind!='wfh' ORDER BY id").map(t => {
     const used = get(`SELECT COALESCE(SUM(days),0) s FROM leaves WHERE emp_id=? AND type_id=? AND status='approved' AND substr(from_date,1,4)=?`, empId, t.id, String(year)).s;
     const pending = get(`SELECT COALESCE(SUM(days),0) s FROM leaves WHERE emp_id=? AND type_id=? AND status='pending' AND substr(from_date,1,4)=?`, empId, t.id, String(year)).s;
@@ -351,7 +354,7 @@ route('POST', '/api/employees/:id/cancel-exit', ({ user, params }) => {
 route('GET', '/api/checklists', ({ user, query }) => {
   need(can(user, 'onboarding'));
   return all(`SELECT c.*, e.name emp_name, e.emp_code FROM checklists c JOIN employees e ON e.id=c.emp_id
-    WHERE (? IS NULL OR c.kind=?) AND (? IS NULL OR c.emp_id=?) ORDER BY c.emp_id, c.id`, query.kind, query.kind, query.emp_id, query.emp_id);
+    WHERE (CAST(? AS TEXT) IS NULL OR c.kind=?) AND (CAST(? AS INTEGER) IS NULL OR c.emp_id=?) ORDER BY c.emp_id, c.id`, query.kind, query.kind, query.emp_id, query.emp_id);
 });
 route('POST', '/api/checklists', ({ user, body }) => { need(can(user, 'onboarding')); req_(body, 'emp_id', 'kind', 'title'); run('INSERT INTO checklists(emp_id,kind,title) VALUES(?,?,?)', body.emp_id, body.kind, body.title); return { ok: true }; });
 route('POST', '/api/checklists/:id/toggle', ({ user, params }) => {
@@ -878,9 +881,9 @@ route('GET', '/api/expenses/summary', ({ user }) => {
   const pending = one(`SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM expenses WHERE emp_id IS NOT NULL AND status='pending'`);
   const thisMonth = one(`SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE ${EXP_APPROVED} AND substr(date,1,7)=?`, month).s;
   const byCategory = all(`SELECT category, SUM(amount) total, SUM(CASE WHEN emp_id IS NULL THEN amount ELSE 0 END) company, SUM(CASE WHEN emp_id IS NULL THEN 0 ELSE amount END) claims, COUNT(*) count FROM expenses WHERE ${EXP_APPROVED} GROUP BY category ORDER BY total DESC`);
-  const months = []; for (let i = 5; i >= 0; i--) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i); months.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')); }
+  const months = []; { let y = +month.slice(0, 4), m = +month.slice(5); for (let i = 0; i < 6; i++) { months.unshift(y + '-' + String(m).padStart(2, '0')); if (--m === 0) { m = 12; y--; } } }
   const byMonth = months.map(m => ({ month: m, total: one(`SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE ${EXP_APPROVED} AND substr(date,1,7)=?`, m).s }));
-  const topSpenders = all("SELECT e.name, SUM(x.amount) total, COUNT(*) count FROM expenses x JOIN employees e ON e.id=x.emp_id WHERE x.status='approved' GROUP BY x.emp_id ORDER BY total DESC LIMIT 5");
+  const topSpenders = all("SELECT e.name, SUM(x.amount) total, COUNT(*) count FROM expenses x JOIN employees e ON e.id=x.emp_id WHERE x.status='approved' GROUP BY x.emp_id, e.name ORDER BY total DESC LIMIT 5");
   return { total: round(company.s + claims.s), company: round(company.s), companyCount: company.c, claims: round(claims.s), claimsCount: claims.c, pending: round(pending.s), pendingCount: pending.c, thisMonth: round(thisMonth), byCategory, byMonth, topSpenders };
 });
 route('POST', '/api/expenses/company', ({ user, body }) => {
@@ -911,7 +914,7 @@ mroute('POST', '/api/master/companies', ({ user, body }) => {
   if (M.get('SELECT id FROM companies WHERE upper(emp_prefix)=?', prefix)) bad('That employee ID prefix is already used by another company');
   if (M.get('SELECT id FROM companies WHERE lower(admin_email)=lower(?)', body.admin_email)) bad('That admin email already belongs to another company');
   const file = code + '.db';
-  if (fs.existsSync(path.join(DATA, file))) bad('A leftover data file exists for this code; choose another code');
+  if (tenantExists(file)) bad('Data for this company code already exists; choose another code');
   const id = M.run('INSERT INTO companies(code,name,db_file,created,admin_email,emp_prefix) VALUES(?,?,?,?,?,?)', code, body.name.trim(), file, todayStr(), body.admin_email.trim(), prefix).lastInsertRowid;
   const c = company_(id);
   try {
@@ -920,7 +923,7 @@ mroute('POST', '/api/master/companies', ({ user, body }) => {
       if (body.sample_data) { seedDemo(); run("UPDATE employees SET name=?,email=?,password_hash=? WHERE emp_code='HH001'", a.adminName, a.adminEmail, hash(a.adminPassword)); if (prefix !== 'HH') run('UPDATE employees SET emp_code = ? || SUBSTR(emp_code,3)', prefix); }
       else seedBasics(a);
     });
-  } catch (e) { dropTenant(file); M.run('DELETE FROM companies WHERE id=?', id); for (const x of ['', '-wal', '-shm']) fs.rmSync(path.join(DATA, file + x), { force: true }); throw e; }
+  } catch (e) { M.run('DELETE FROM companies WHERE id=?', id); deleteTenant(file); throw e; }
   return { id, code };
 });
 mroute('POST', '/api/master/companies/:id/status', ({ params, body }) => {
@@ -933,9 +936,7 @@ mroute('POST', '/api/master/companies/:id/rename', ({ params, body }) => { req_(
 mroute('DELETE', '/api/master/companies/:id', ({ user, params, body }) => {
   confirmPw(user, body);
   const c = company_(params.id); if (body.confirm !== c.code) bad('Type the company code to confirm deletion');
-  M.run('DELETE FROM sessions WHERE company_id=?', c.id); M.run('DELETE FROM companies WHERE id=?', c.id); dropTenant(c.db_file);
-  const f = path.isAbsolute(c.db_file) ? c.db_file : path.join(DATA, c.db_file);
-  for (const x of ['', '-wal', '-shm']) fs.rmSync(f + x, { force: true });
+  M.run('DELETE FROM sessions WHERE company_id=?', c.id); M.run('DELETE FROM companies WHERE id=?', c.id); deleteTenant(c.db_file);
   return { ok: true };
 });
 mroute('GET', '/api/master/companies/:id/admins', ({ params }) => adminsOf(company_(params.id)));
@@ -981,9 +982,10 @@ if (MASTER_EMAIL && MASTER_PASSWORD) {
   if (process.env.NODE_ENV === 'production' || process.env.VERCEL) console.error('No master account: set MASTER_EMAIL and MASTER_PASSWORD environment variables.');
   else { M.run('INSERT INTO masters(name,email,password_hash) VALUES(?,?,?)', 'Platform Owner', 'master@hellohr.com', hash('master123')); console.log('Created dev master account master@hellohr.com / master123 - change it after first login.'); }
 }
-if (!M.get('SELECT id FROM companies') && process.env.SEED_DEMO !== '0') {
+const SEED_DEMO = process.env.SEED_DEMO === '1' || (process.env.SEED_DEMO !== '0' && !process.env.VERCEL && process.env.NODE_ENV !== 'production');
+if (!M.get('SELECT id FROM companies') && SEED_DEMO) {
   const legacy = path.join(__dirname, 'hellohr.db');
-  if (fs.existsSync(legacy)) M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company',?,?)", legacy, todayStr());
+  if (!IS_PG && fs.existsSync(legacy)) M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company',?,?)", legacy, todayStr());
   else { M.run("INSERT INTO companies(code,name,db_file,created) VALUES('demo','Demo Company','demo.db',?)", todayStr()); inCompany(M.get("SELECT * FROM companies WHERE code='demo'"), seedDemo); }
 }
 
@@ -998,7 +1000,8 @@ for (const c of M.all('SELECT * FROM companies')) inCompany(c, () => { normalize
 // ---------- server ----------
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' };
 
-const server = http.createServer((req, res) => {
+const handler = (req, res) => {
+  if (process.env.HH_DEBUG) { const q0 = queries(), t0 = Date.now(); res.on('finish', () => console.log(`${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${queries() - q0} db-queries ${Date.now() - t0}ms`)); }
   res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'SAMEORIGIN'); res.setHeader('Referrer-Policy', 'same-origin');
   const url = new URL(req.url, 'http://x');
   const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
@@ -1013,6 +1016,7 @@ const server = http.createServer((req, res) => {
   let raw = '';
   req.on('data', c => { raw += c; if (raw.length > 1e6) req.destroy(); });
   req.on('end', () => {
+    if (!raw && req.method !== 'GET' && req.method !== 'HEAD' && req.body) raw = typeof req.body === 'string' ? req.body : Buffer.isBuffer(req.body) ? req.body.toString() : JSON.stringify(req.body);
     try {
       const r = routes.find(r => r.method === req.method && r.re.test(url.pathname));
       if (!r) return send(404, { error: 'Not found' });
@@ -1045,6 +1049,7 @@ const server = http.createServer((req, res) => {
       console.error(e); send(500, { error: 'Server error: ' + e.message });
     }
   });
-});
+};
 
-server.listen(PORT, () => console.log(`HelloHR running at http://localhost:${PORT}`));
+module.exports = handler;
+if (require.main === module) http.createServer(handler).listen(PORT, () => console.log(`HelloHR running at http://localhost:${PORT}${IS_PG ? ' (PostgreSQL)' : ' (SQLite)'}`));

@@ -1,4 +1,4 @@
-﻿# HelloHR - HRMS Portal
+# HelloHR - HRMS Portal
 
 Employee management system with zero npm dependencies (Node 22.5+ with built-in SQLite).
 
@@ -51,9 +51,16 @@ Once set, employees can punch in/out only within that distance; the browser shar
 their location is still stored and appears in **Punch history** (Attendance -> Punch locations / Punch history) with the date, flagged "Away from office". Clear the location to switch the check off.
 Browsers only share location on HTTPS or localhost pages, so use HTTPS when you deploy. Work-from-home punches need an approved WFH request (or the employee's work type set to Work from home) once an office location is set.
 
-## Deploying (needs a persistent disk - Vercel/serverless can't keep the SQLite files)
-Environment variables: `MASTER_EMAIL`, `MASTER_PASSWORD` (creates the platform owner on first start; set them as secrets, never commit them), `DATA_DIR` (folder on the persistent disk),
-`SEED_DEMO=0` (skip demo company), `NODE_ENV=production`, `PORT` (set by the host).
-- **Render:** New -> Blueprint -> select this repo (uses `render.yaml`, 1 GB disk) -> enter MASTER_EMAIL / MASTER_PASSWORD.
-- **Railway / Fly.io / any Docker host:** deploy the `Dockerfile`, attach a volume at `/data`, set MASTER_EMAIL / MASTER_PASSWORD.
-Requires Node 22.13+ (uses the built-in SQLite). Serve over HTTPS so browsers allow the office-location (GPS) check.
+## Deploying on Vercel (serverless + Postgres)
+Vercel has no persistent disk, so on Vercel HelloHR stores everything in **Postgres** (each company gets its own schema). Locally it still uses SQLite files - the same code runs on both.
+1. Vercel -> **Add New -> Project** -> import this GitHub repo (no build settings needed; `vercel.json` routes everything to `api/index.js`).
+2. Project -> **Storage** -> **Create Database** -> **Neon (Postgres)** -> connect it to the project. This adds `DATABASE_URL` automatically. Pick the Neon region closest to the function region (default `iad1`, US East) - the app makes many small queries, so latency matters.
+3. Project -> **Settings -> Environment Variables**: `MASTER_EMAIL`, `MASTER_PASSWORD` (mark as Sensitive; creates the platform owner on first start). Optional: `APP_TZ` (default `Asia/Kolkata`), `MASTER_NAME`.
+4. **Deploy**, then open `https://<your-project>.vercel.app/master` and sign in. Create companies from there; admins use `/admin`, everyone else `/`.
+The demo company is never seeded on Vercel. Tables are created automatically on first start.
+
+## Other hosts
+Any Docker host with a persistent disk works too (`Dockerfile`, mount a volume at `/data`; or `render.yaml` for Render). Environment: `MASTER_EMAIL`, `MASTER_PASSWORD`, `DATA_DIR`, `NODE_ENV=production`. Set `DATABASE_URL` instead to use Postgres anywhere.
+
+## Tests
+`npm test` (attendance rules) and, against a running server, `BASE=http://localhost:3000 MASTER_EMAIL=... MASTER_PASSWORD=... node test-api.js` (end-to-end; creates and deletes a throw-away company; works on SQLite and Postgres).

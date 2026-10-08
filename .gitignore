@@ -1,4 +1,4 @@
-﻿hellohr.db*
+hellohr.db*
 out.txt
 err.txt
 node_modules
@@ -6,3 +6,5 @@ master.db*
 data/
 Screenshot*.png
 *.png.tmp
+.vercel
+.env*
