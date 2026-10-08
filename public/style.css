@@ -71,6 +71,7 @@ input[type=checkbox]{display:inline-block;width:auto;margin-right:6px}
 .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
 .cal .dh{font-size:12px;font-weight:600;color:var(--muted);text-align:center}
 .cal .day{min-height:64px;border:1px solid var(--line);border-radius:8px;padding:4px 6px;font-size:12px}
+.cal button.day{text-align:left;background:#fff;font:inherit;font-size:12px;color:inherit;cursor:pointer;width:100%}.cal button.day:hover{border-color:var(--brand);box-shadow:0 0 0 2px #c7d2fe}
 .cal .day.off{background:#f3f4f8;color:#9aa3b5}.cal .day.hol{background:#fff7ed}
 .cal .day .badge{font-size:10px;padding:0 6px}
 .bar{height:8px;background:#e5e7eb;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--brand)}

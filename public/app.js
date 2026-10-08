@@ -435,6 +435,7 @@ PAGES.employee = async id => {
   const kv = [['Employee ID', e.emp_code], ['Email', e.email], ['Phone', e.phone], ['Department', e.dept], ['Designation', e.designation], ['Reports to', e.manager ? `<a href="#/employee/${e.manager_id}">${esc(e.manager)}</a>` : '—'], ['Joined', fd(e.join_date)], ['Type', e.employment_type], ['Location', e.location], ['Work type', e.work_type], ['Role', e.role],
     ...(e.pan !== undefined ? [['DOB', fd(e.dob)], ['Gender', e.gender], ['PAN', e.pan], ['Bank a/c', e.bank_account], ['Address', e.address]] : [])];
   const canEdit = hrv, own = e.id === me.id;
+  const attEd = (can('attendance') && e.role !== 'admin' && e.id !== me.id && e.status !== 'exited') ? await attendanceEditor(e).catch(() => '') : '';
   return `<p><a href="#/employees">← Employees</a></p><div class="card" style="display:flex;gap:18px;align-items:center;flex-wrap:wrap"><span class="avatar lg">${initials(e.name)}</span>
     <div class="grow"><h1>${esc(e.name)} ${badge(e.status)} ${e.role === 'admin' ? '<span class="badge approved">Admin</span>' : e.role === 'manager' ? '<span class="badge pending">Managing access</span>' : ''}</h1><div class="muted">${esc(e.designation || '')} · ${esc(e.dept || '')}</div>${e.today ? `<div style="margin-top:6px">Today: ${stBadge(e.today)}${e.today.check_in ? ` <small class="muted">in ${e.today.check_in}${e.today.check_out ? ' · out ' + e.today.check_out : ''}</small>` : ''}</div>` : ''}${e.exit_date ? `<div class="err">Last working day: ${fd(e.exit_date)} ${e.exit_reason ? '— ' + esc(e.exit_reason) : ''}</div>` : ''}</div>
     ${canEdit ? `<button class="btn" data-act="editEmp" data-id="${e.id}">Edit</button>` : ''}${own && !canEdit ? `<button class="btn" data-act="editSelf" data-id="${e.id}">Update my details</button>` : ''}
@@ -442,7 +443,42 @@ PAGES.employee = async id => {
     ${can('onboarding') && e.status === 'notice' ? `<button class="btn" data-act="cancelExit" data-id="${e.id}">Cancel exit</button>` : ''}</div>
     <div class="grid g2"><div class="card"><h2>Profile</h2><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${k === 'Reports to' ? v : esc(v) || '—'}</dd>`).join('')}</dl></div>
     <div>${profileCard(e, prof)}${profileRequests(e)}${(e.role === 'manager' && e.perms?.length && (e.pan !== undefined)) ? `<div class="card"><h2>Can manage</h2>${e.perms.map(p => `<span class="badge" style="margin:2px">${esc(permLabel(p))}</span>`).join(' ')}</div>` : ''}${sal}${bal}<div class="card"><h2>Assigned assets</h2>${e.assets.map(a => `<div>${esc(a.name)} <span class="muted">${esc(a.tag)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
-    ${e.reports.length ? `<div class="card"><h2>Direct reports</h2>${e.reports.map(r => `<div><a href="#/employee/${r.id}">${esc(r.name)}</a> <span class="muted">${esc(r.designation || '')}</span></div>`).join('')}</div>` : ''}</div></div>`;
+    ${e.reports.length ? `<div class="card"><h2>Direct reports</h2>${e.reports.map(r => `<div><a href="#/employee/${r.id}">${esc(r.name)}</a> <span class="muted">${esc(r.designation || '')}</span></div>`).join('')}</div>` : ''}</div></div>${attEd}`;
+};
+
+// ---- admin: edit an employee's attendance for any date ----
+const DAY_TXT = { office: ['Present', 'present'], wfh: ['Work from home', 'wfh'], half: ['Half day', 'half'], absent: ['Absent', 'rejected'], leave: ['On leave', 'approved'], pending: ['—', ''], off: ['Off', ''] };
+async function attendanceEditor(e) {
+  const month = S.empAttMonth || ym(new Date());
+  const [a, edits] = await Promise.all([api('GET', `/api/attendance?month=${month}&emp_id=${e.id}`), api('GET', '/api/attendance/edits?emp_id=' + e.id)]);
+  S._edAtt = { a, empId: e.id, name: e.name };
+  const [y, m] = month.split('-').map(Number), firstDow = (new Date(y, m - 1, 1).getDay() + 6) % 7, nd = new Date(y, m, 0).getDate();
+  const byDate = Object.fromEntries(a.rows.map(r => [r.date, r])), hol = Object.fromEntries(a.holidays.map(h => [h.date, h.name]));
+  const cnt = { office: 0, wfh: 0, half: 0, absent: 0, leave: 0 }; Object.values(a.days).forEach(d => { if (cnt[d.status] !== undefined) cnt[d.status]++; });
+  let cells = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<div class="dh">${x}</div>`).join('') + '<div></div>'.repeat(firstDow);
+  for (let d = 1; d <= nd; d++) {
+    const ds = `${month}-${String(d).padStart(2, '0')}`, dow = new Date(y, m - 1, d).getDay(), dv = a.days[ds], r = byDate[ds], st = dv && DAY_TXT[dv.status] ? dv.status : null;
+    const manual = (r && r.manual) || (dv && dv.reason === 'Set by admin');
+    cells += `<button type="button" class="day editable ${dow === 0 || dow === 6 ? 'off' : ''} ${hol[ds] ? 'hol' : ''}" data-act="editDay" data-date="${ds}" title="Click to change this day"><b>${d}</b> ${st && DAY_TXT[st][0] !== '—' && DAY_TXT[st][0] !== 'Off' ? `<span class="badge ${DAY_TXT[st][1]}">${DAY_TXT[st][0]}${dv.leave_type ? ' · ' + esc(dv.leave_type.replace(/ \(.*/, '')) : ''}</span>` : ''}${manual ? ' <span title="Set by admin">✎</span>' : ''}${hol[ds] ? `<br><small class="muted">${esc(hol[ds])}</small>` : ''}${r && r.check_in ? `<br><small>${r.check_in}–${r.check_out || ''}${r.hours ? ' · ' + r.hours + 'h' : ''}</small>` : ''}</button>`;
+  }
+  const chip = (n, l, c) => `<span class="badge ${c}" style="margin-right:6px">${n} ${l}</span>`;
+  return `<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h2 class="grow" style="margin:0">🗓️ Attendance — edit any day</h2><input type="month" id="empAttMonth" value="${month}" style="width:auto"></div>
+    <p class="muted" style="margin:6px 0 10px">Click any day to change it to Present, Work from home, Half day, Absent, On leave, or back to automatic. Works for past and upcoming dates; payroll follows the change and every edit is logged below.</p>
+    <div style="margin-bottom:10px">${chip(cnt.office, 'present', 'present')}${chip(cnt.wfh, 'WFH', 'wfh')}${chip(cnt.half, 'half day', 'half')}${chip(cnt.absent, 'absent', 'rejected')}${chip(cnt.leave, 'on leave', 'approved')}<small class="muted">✎ = set by admin</small></div>
+    <div class="cal">${cells}</div>
+    <h3 style="margin-top:16px">Recent edits</h3>${edits.length ? edits.slice(0, 10).map(x => `<div class="docfile">✎ <b>${fd(x.date)}</b>: ${esc(x.before_text)} → <b>${esc(x.after_text)}</b> <small class="muted">· ${esc(x.by_name || '')} · ${new Date(x.at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}${x.note ? ' · “' + esc(x.note) + '”' : ''}</small></div>`).join('') : '<span class="muted">No edits yet.</span>'}</div>`;
+}
+const DAY_EDIT_ACTIONS = {
+  editDay: (_id, el) => {
+    const date = el.dataset.date, { a, empId, name } = S._edAtt, dv = a.days[date] || {}, label = DAY_TXT[dv.status] ? DAY_TXT[dv.status][0] : 'Not marked', cur = ({ office: 'present', wfh: 'wfh', half: 'half', absent: 'absent', leave: 'leave' })[dv.status] || 'present';
+    const leaveTypes = S.lk.leaveTypes.filter(t => t.kind !== 'wfh');
+    openForm({ title: `${name} — ${new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`, submit: 'Save change',
+      intro: `Currently: <b>${esc(label)}${dv.leave_type ? ' · ' + esc(dv.leave_type) : ''}</b>${dv.reason ? ' — ' + esc(dv.reason) : ''}.`,
+      fields: [{ name: 'status', label: 'Set this day as', type: 'select', full: true, required: true, value: cur, options: [['present', 'Present (full day, in office)'], ['wfh', 'Work from home (full day)'], ['half', 'Half day'], ['absent', 'Absent'], ['leave', 'On leave'], ['auto', 'Back to automatic (use the punches)']] },
+        { name: 'type_id', label: 'Leave type', type: 'select', showIf: 'status=leave', options: leaveTypes.map(t => [t.id, t.name]), value: (leaveTypes.find(t => /Casual/.test(t.name)) || leaveTypes[0] || {}).id },
+        { name: 'note', label: 'Reason / note (optional, kept in the edit log)', type: 'textarea' }],
+      onSubmit: async v => { const r = await api('POST', '/api/attendance/edit', { emp_id: empId, date, status: v.status, type_id: v.type_id, note: v.note }); toast('Updated — now: ' + r.after); if (r.payroll_locked) setTimeout(() => toast('Payroll for this month is already finalized; payslips will not change.', true), 1800); } });
+  },
 };
 
 // ---- attendance ----
@@ -958,6 +994,7 @@ const A = {
 
 Object.assign(A, MASTER_ACTIONS);
 Object.assign(A, PROFILE_ACTIONS);
+Object.assign(A, DAY_EDIT_ACTIONS);
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = A[el.dataset.act]; if (!fn) return; e.preventDefault();
@@ -973,6 +1010,7 @@ document.addEventListener('change', guard(async e => {
   if (t.id === 'attMonth') { S.attMonth = t.value; route(); }
   else if (t.id === 'attDate') { S.attDate = t.value; route(); }
   else if (t.id === 'repMonth') { S.repMonth = t.value; route(); }
+  else if (t.id === 'empAttMonth') { S.empAttMonth = t.value; route(); }
   else if (t.id === 'histFrom') { S.histFrom = t.value; route(); }
   else if (t.id === 'histTo') { S.histTo = t.value; route(); }
   else if (t.id === 'histEmp') { S.histEmp = t.value; route(); }

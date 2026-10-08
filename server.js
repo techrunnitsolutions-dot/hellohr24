@@ -379,7 +379,7 @@ route('GET', '/api/attendance', ({ user, query }) => {
   const mm = monthMap(eid, month, cfg), recs = mm.recs;
   const leaves = all(`SELECT l.from_date,l.to_date,t.name,t.kind FROM leave_types t JOIN leaves l ON t.id=l.type_id WHERE l.emp_id=? AND l.status='approved' AND l.from_date<=? AND l.to_date>=?`, eid, last, first);
   const byDate = Object.fromEntries(recs.map(r => [r.date, r])), days = {};
-  for (let d = first; d <= last && d <= t; d = addDays(d, 1)) {
+  for (let d = first; d <= last; d = addDays(d, 1)) {   // whole month, so upcoming leave / admin-set days show too
     if (byDate[d]) days[d] = mm.days[d];
     else if (isWorkday(d, hols)) { const lv = leaves.find(l => l.from_date <= d && l.to_date >= d); days[d] = lv ? (lv.kind === 'wfh' ? { status: 'wfh', reason: 'Approved work from home' } : { status: 'leave', leave_type: lv.name }) : AE.derive(null, d, cfg, undefined, [], nowSec(), t); }
   }
@@ -443,15 +443,56 @@ route('POST', '/api/attendance/checkout', ({ user, body }) => {
   });
   return { ...buildPunch(user.id), checked: { dist: g.dist, away: !!g.away } };
 });
-route('POST', '/api/attendance/mark', ({ user, body }) => {
-  need(can(user, 'attendance')); req_(body, 'emp_id', 'date', 'status');
-  if (body.status === 'absent') { run('DELETE FROM attendance WHERE emp_id=? AND date=?', body.emp_id, body.date); return { ok: true }; }
-  if (body.status === 'auto') { run('UPDATE attendance SET manual=0 WHERE emp_id=? AND date=?', body.emp_id, body.date); return { ok: true }; }
-  if (!['present', 'wfh', 'half'].includes(body.status)) bad('Invalid status');
-  const cfg = attCfg();
-  run(`INSERT INTO attendance(emp_id,date,check_in,check_out,status,mode,manual) VALUES(?,?,?,?,?,?,1)
-    ON CONFLICT(emp_id,date) DO UPDATE SET status=excluded.status, mode=excluded.mode, manual=1`, body.emp_id, body.date, cfg.office_start, cfg.office_end, body.status, body.status === 'wfh' ? 'wfh' : 'office');
-  return { ok: true };
+// ---- admin edits of any employee's attendance for any date (past or future): present / WFH / half day / absent / leave / back to automatic ----
+const DAY_EDIT_STATUSES = ['present', 'wfh', 'half', 'absent', 'leave', 'auto'];
+const describeDay = d => `${d.status}${d.leave_type ? ' (' + d.leave_type + ')' : ''}${d.reason ? ' - ' + d.reason : ''}`;
+// an explicit day-edit overrides leave on that day; multi-day leaves are split around it
+function removeDayFromLeaves(empId, date) {
+  for (const l of all("SELECT * FROM leaves WHERE emp_id=? AND status IN ('pending','approved') AND from_date<=? AND to_date>=?", empId, date, date)) {
+    if (l.from_date !== l.to_date) {
+      const part = (from, to) => { const d = workdaysBetween(from, to); if (d > 0) run('INSERT INTO leaves(emp_id,type_id,from_date,to_date,days,reason,status,approver_id,note,created) VALUES(?,?,?,?,?,?,?,?,?,?)', l.emp_id, l.type_id, from, to, d, l.reason, l.status, l.approver_id, 'Adjusted by admin', l.created); };
+      if (l.from_date < date) part(l.from_date, addDays(date, -1));
+      if (l.to_date > date) part(addDays(date, 1), l.to_date);
+    }
+    run("UPDATE leaves SET status='cancelled', note=? WHERE id=?", l.from_date === l.to_date ? 'Day changed by admin' : 'Split after an admin edit of one day', l.id);
+  }
+}
+function applyDayEdit(user, empId, date, status, typeId, note) {
+  need(can(user, 'attendance'));
+  if (!DAY_EDIT_STATUSES.includes(status)) bad('Choose present, work from home, half day, absent, leave or automatic');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) bad('Invalid date');
+  const e = get('SELECT * FROM employees WHERE id=?', empId); if (!e) bad('Employee not found', 404);
+  if (e.role === 'admin') bad('Admin accounts do not have attendance');
+  if (empId === user.id) bad('You cannot edit your own attendance; ask the company admin', 403);
+  if (date < (e.join_date || '2000-01-01')) bad('That date is before the employee joined');
+  if (date > addDays(todayStr(), 366)) bad('That date is too far in the future');
+  const cfg = attCfg(), work = isWorkday(date, holidaySet()), before = describeDay(dayStatus(empId, date, cfg, work));
+  tx(() => {
+    if (status !== 'auto') removeDayFromLeaves(empId, date);
+    if (status === 'auto') {
+      run('UPDATE attendance SET manual=0 WHERE emp_id=? AND date=?', empId, date);
+      run('DELETE FROM attendance WHERE emp_id=? AND date=? AND check_in IS NULL', empId, date);   // a bare "absent" marker has nothing to fall back on
+    } else if (status === 'leave') {
+      const t = get('SELECT * FROM leave_types WHERE id=?', typeId); if (!t || t.kind === 'wfh') bad('Choose a leave type');
+      if (!work) bad('That day is a weekend or holiday, so there is nothing to take leave for');
+      run('DELETE FROM attendance WHERE emp_id=? AND date=?', empId, date);
+      run("INSERT INTO leaves(emp_id,type_id,from_date,to_date,days,reason,status,approver_id,note,created) VALUES(?,?,?,?,1,?,'approved',?,?,?)", empId, t.id, date, date, note || 'Marked by admin', user.id, 'Marked by admin', todayStr());
+    } else {
+      const mode = status === 'wfh' ? 'wfh' : 'office', pin = status === 'absent' ? null : cfg.office_start, pout = status === 'absent' ? null : cfg.office_end;
+      run(`INSERT INTO attendance(emp_id,date,check_in,check_out,status,mode,manual) VALUES(?,?,?,?,?,?,1)
+        ON CONFLICT(emp_id,date) DO UPDATE SET status=excluded.status, mode=excluded.mode, manual=1, check_in=COALESCE(attendance.check_in, excluded.check_in), check_out=COALESCE(attendance.check_out, excluded.check_out)`, empId, date, pin, pout, status, mode);
+    }
+    const after = describeDay(dayStatus(empId, date, cfg, work));
+    run('INSERT INTO attendance_edits(emp_id,date,before_text,after_text,by_id,at,note) VALUES(?,?,?,?,?,?,?)', empId, date, before, after, user.id, new Date().toISOString(), String(note || '').slice(0, 200));
+  });
+  const locked = get("SELECT 1 x FROM payruns WHERE month=? AND status='finalized'", date.slice(0, 7));
+  return { ok: true, before, after: describeDay(dayStatus(empId, date, cfg, work)), payroll_locked: !!locked };
+}
+route('POST', '/api/attendance/edit', ({ user, body }) => { req_(body, 'emp_id', 'date', 'status'); return applyDayEdit(user, +body.emp_id, body.date, body.status, body.type_id, body.note); });
+route('POST', '/api/attendance/mark', ({ user, body }) => { req_(body, 'emp_id', 'date', 'status'); return applyDayEdit(user, +body.emp_id, body.date, body.status, body.type_id, body.note); });
+route('GET', '/api/attendance/edits', ({ user, query }) => {
+  need(can(user, 'attendance')); const id = +query.emp_id; if (!id) bad('emp_id is required');
+  return all('SELECT x.*, a.name by_name FROM attendance_edits x LEFT JOIN employees a ON a.id=x.by_id WHERE x.emp_id=? ORDER BY x.id DESC LIMIT 30', id);
 });
 route('GET', '/api/settings/attendance', () => attCfg());
 route('PUT', '/api/settings/attendance', ({ user, body }) => {
