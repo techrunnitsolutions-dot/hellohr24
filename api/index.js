@@ -1,5 +1,6 @@
 // Vercel serverless entry: every request (pages and /api/*) is handled by the same HelloHR request handler.
 // If the app cannot start (most often: no database connected yet) we answer with a readable message instead of a bare 500.
+process.env.HH_SERVERLESS = '1';   // tells server.js not to open its own port
 let handler = null, startupError = null;
 try { handler = require('../server.js'); } catch (e) { startupError = e; console.error('HelloHR failed to start:', e); }
 

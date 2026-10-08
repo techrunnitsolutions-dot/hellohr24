@@ -1052,4 +1052,4 @@ const handler = (req, res) => {
 };
 
 module.exports = handler;
-if (require.main === module) http.createServer(handler).listen(PORT, () => console.log(`HelloHR running at http://localhost:${PORT}${IS_PG ? ' (PostgreSQL)' : ' (SQLite)'}`));
+if (require.main === module || (process.env.VERCEL && !process.env.HH_SERVERLESS)) http.createServer(handler).listen(PORT, () => console.log(`HelloHR running at http://localhost:${PORT}${IS_PG ? ' (PostgreSQL)' : ' (SQLite)'}`));
