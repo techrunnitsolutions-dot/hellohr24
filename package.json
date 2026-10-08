@@ -8,7 +8,7 @@
     "test": "node test-attendance.js"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": "22.x"
   },
   "dependencies": {
     "pg": "^8.23.1"

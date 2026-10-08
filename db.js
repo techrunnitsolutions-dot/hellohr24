@@ -14,9 +14,12 @@ const IS_PG = !!PG_URL;
 
 // ================= Postgres worker thread =================
 function runPgWorker() {
-  const { Client, types } = require('pg');
-  types.setTypeParser(20, v => parseInt(v, 10));    // bigint (COUNT, SUM of ints) -> number
-  types.setTypeParser(1700, v => parseFloat(v));    // numeric -> number
+  let Client, loadError = null;
+  try {
+    const pg = require('pg'); Client = pg.Client;
+    pg.types.setTypeParser(20, v => parseInt(v, 10));    // bigint (COUNT, SUM of ints) -> number
+    pg.types.setTypeParser(1700, v => parseFloat(v));    // numeric -> number
+  } catch (e) { loadError = e; }                        // reported to the caller instead of crashing the whole function
   let client = null, inTx = false;
   const connect = async () => {
     const c = new Client({ connectionString: workerData.url, connectionTimeoutMillis: 15000, query_timeout: 25000, keepAlive: true });
@@ -25,6 +28,7 @@ function runPgWorker() {
   };
   parentPort.on('message', async ({ sab, port, text, params, simple }) => {
     const flag = new Int32Array(sab); let out;
+    if (loadError) { port.postMessage({ ok: false, message: 'Postgres driver unavailable: ' + loadError.message, code: loadError.code }); Atomics.store(flag, 0, 1); Atomics.notify(flag, 0); return; }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const c = client || await connect();
@@ -47,15 +51,15 @@ function runPgWorker() {
 }
 if (!isMainThread && workerData && workerData.hellohrPg) { runPgWorker(); return; }
 
-let worker = null, queryCount = 0;
+let worker = null, workerFailure = null, queryCount = 0;
 function pgCall(text, params = [], simple = false) {
   queryCount++;
-  if (!worker) { worker = new Worker(__filename, { workerData: { hellohrPg: true, url: PG_URL } }); worker.unref(); }
+  if (!worker) { worker = new Worker(__filename, { workerData: { hellohrPg: true, url: PG_URL } }); worker.unref(); worker.on('error', e => { workerFailure = e; worker = null; }); }
   const { port1, port2 } = new MessageChannel(), sab = new SharedArrayBuffer(4), flag = new Int32Array(sab);
   worker.postMessage({ sab, port: port2, text, params, simple }, [port2]);
   const waited = Atomics.wait(flag, 0, 0, 120000);
   const m = receiveMessageOnPort(port1); port1.close();
-  if (waited === 'timed-out' || !m) throw new Error('Database did not respond in time');
+  if (waited === 'timed-out' || !m) { const f = workerFailure; workerFailure = null; worker = null; throw new Error(f ? 'Database worker failed: ' + f.message : 'Database did not respond in time'); }
   if (!m.message.ok) { const e = new Error(m.message.message); e.code = m.message.code; throw e; }
   return m.message;
 }
