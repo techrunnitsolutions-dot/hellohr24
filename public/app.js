@@ -885,7 +885,6 @@ const SAL_ACTIONS = {
   },
   salBulk: type => openForm({ title: 'Switch salary basis', intro: `Everyone will be shown as <b>${type === 'inhand' ? 'annual in-hand' : 'annual CTC'}</b>. Nobody's pay changes.`, submit: 'Switch', fields: [PW], onSubmit: async v => { const r = await api('POST', '/api/salary/switch-type', { salary_type: type, confirm_password: v.confirm_password }); toast(`${r.changed} employee(s) switched`); } }),
 };
-Object.assign(A, SAL_ACTIONS);
 async function salRowChanged(id, el) {
   const r = S._sal.find(x => x.id == id), t = document.querySelector(`[data-saltype="${id}"]`), a = document.querySelector(`[data-salamt="${id}"]`);
   if (el.dataset.saltype) a.value = Math.round(t.value === 'ctc' ? r.ctc : r.inhand_annual);   // switching basis keeps the pay
@@ -1032,6 +1031,7 @@ const A = {
 };
 
 Object.assign(A, MASTER_ACTIONS);
+Object.assign(A, SAL_ACTIONS);
 Object.assign(A, PROFILE_ACTIONS);
 Object.assign(A, DAY_EDIT_ACTIONS);
 document.addEventListener('click', e => {
