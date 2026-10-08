@@ -29,9 +29,25 @@
     if (deferred) { deferred.prompt(); const c = await deferred.userChoice.catch(() => ({})); deferred = null; if (c.outcome === 'accepted') toast('Installing HelloHR…'); return; }
     box('<h2>Install HelloHR on Android</h2>' + ANDROID_STEPS);
   }
+  // iOS: Apple gives websites no way to add themselves, so show a short picture guide with an arrow pointing at Safari's Share button
+  const SHARE_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M5 11v8a2 2 0 002 2h10a2 2 0 002-2v-8"/></svg>';
+  const PLUS_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
   function ios() {
     if (standalone) return toast('You are already using the app');
-    box('<h2>Install HelloHR on iPhone / iPad</h2><p class="muted" style="margin-top:0">Apple does not allow installing apps straight from a website, so add it to your home screen. It then opens full-screen like any other app.</p>' + IOS_STEPS);
+    const ua = navigator.userAgent, ipad = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1), safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram|Line/.test(ua), iphoneOrIpad = /iPhone|iPod/.test(ua) || ipad;
+    const o = document.createElement('div'); o.className = 'appmodal ios-guide';
+    const step = (n, ic, t) => '<div class="gstep"><span class="gnum">' + n + '</span><span class="gic">' + ic + '</span><span class="gtx">' + t + '</span></div>';
+    o.innerHTML = '<div class="appmodal-card"><h2 style="margin-top:0">Add HelloHR to your home screen</h2>'
+      + (!iphoneOrIpad ? '<p class="muted">Open this page on your iPhone or iPad to add the app icon. Send yourself this link: <b>' + location.origin + '</b></p>' : '')
+      + (iphoneOrIpad && !safari ? '<div class="gwarn">For the best result open this page in <b>Safari</b>. <button class="btn sm" type="button" data-x="copy">Copy link</button></div>' : '')
+      + '<div class="gsteps">' + step(1, SHARE_ICON, 'Tap the <b>Share</b> button ' + (ipad ? 'at the top of Safari' : 'at the bottom of Safari') + '.')
+      + step(2, PLUS_ICON, 'Scroll down and tap <b>Add to Home Screen</b>.') + step(3, '<b style="color:#2563eb">Add</b>', 'Tap <b>Add</b> (top right). The HelloHR icon now sits on your home screen.') + '</div>'
+      + '<div class="actions" style="gap:8px"><button class="btn primary" type="button" data-x="ok">Got it</button></div></div>'
+      + (iphoneOrIpad ? '<div class="garrow ' + (ipad ? 'top' : 'bottom') + '" aria-hidden="true">Tap Share <span>' + (ipad ? '↗' : '↓') + '</span></div>' : '');
+    o.addEventListener('click', e => { const x = e.target.dataset && e.target.dataset.x;
+      if (x === 'copy') { (navigator.clipboard ? navigator.clipboard.writeText(location.origin) : Promise.reject()).then(() => toast('Link copied. Paste it in Safari.'), () => toast(location.origin)); return; }
+      if (e.target === o || x === 'ok') o.remove(); });
+    document.body.appendChild(o);
   }
   document.addEventListener('click', e => { const b = e.target.closest('[data-app]'); if (!b) return; e.preventDefault(); (b.dataset.app === 'ios' ? ios : android)(); });
   // the app is for employees: hide the buttons on the admin / master logins and inside the installed app
