@@ -15,6 +15,10 @@ jobs:
         with: { distribution: temurin, java-version: 17 }
       - run: npm install
       - run: npx cap add android
+      - name: Use the HelloHR logo as the app icon
+        run: |
+          cp -r resources/android/. android/app/src/main/res/
+          echo '<?xml version="1.0" encoding="utf-8"?><resources><color name="ic_launcher_background">#FFFFFF</color></resources>' > android/app/src/main/res/values/ic_launcher_background.xml
       - name: Allow location (punch-in geo-fencing), camera and photo uploads in the app
         run: |
           M=android/app/src/main/AndroidManifest.xml
