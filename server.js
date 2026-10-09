@@ -174,7 +174,7 @@ route('GET', '/api/lookups', ({ user }) => {
 route('GET', '/api/dashboard', ({ user }) => {
   const today = todayStr(), month = today.slice(0, 7), out = {};
   out.announcements = all('SELECT a.*, e.name author FROM announcements a LEFT JOIN employees e ON e.id=a.author_id ORDER BY a.id DESC LIMIT 5');
-  out.holidays = all('SELECT * FROM holidays WHERE date>=? ORDER BY date LIMIT 4', today);
+  out.holidays = all('SELECT * FROM holidays WHERE date>=? ORDER BY date LIMIT 30', today);
   { const pu = buildPunch(user.id); out.punch = pu; out.today = pu.first_in ? { status: toStored(pu.status), check_in: pu.first_in, check_out: pu.last_out } : null; out.monthSummary = pu.month; }
   out.balances = leaveBalance(user.id);
   out.pendingRequests = reviewableRequests(user).filter(r => r.status === 'pending').length;
@@ -496,7 +496,17 @@ route('PUT', '/api/settings/attendance', ({ user, body }) => {
 });
 // holidays & leave types
 route('GET', '/api/holidays', () => all('SELECT * FROM holidays ORDER BY date'));
-route('POST', '/api/holidays', ({ user, body }) => { need(can(user, 'settings')); req_(body, 'date', 'name'); try { run('INSERT INTO holidays(date,name) VALUES(?,?)', body.date, body.name); } catch { bad('A holiday already exists on that date'); } return { ok: true }; });
+// one holiday of N days = N consecutive calendar days with the same name (holidays are never working days, so nobody's pay is cut for them)
+route('POST', '/api/holidays', ({ user, body }) => {
+  need(can(user, 'settings')); req_(body, 'date', 'name');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) bad('Pick a valid date');
+  const n = body.days === undefined || body.days === '' ? 1 : Math.round(+body.days); if (!(n >= 1 && n <= 60)) bad('A holiday can be 1 to 60 days long');
+  const name = String(body.name).trim().slice(0, 100); if (!name) bad('Enter the holiday name');
+  let added = 0, skipped = 0;
+  tx(() => { for (let i = 0; i < n; i++) { const d = addDays(body.date, i); if (get('SELECT id FROM holidays WHERE date=?', d)) { skipped++; continue; } run('INSERT INTO holidays(date,name) VALUES(?,?)', d, name); added++; } });
+  if (!added) bad(n === 1 ? 'A holiday already exists on that date' : 'Holidays already exist on all of those dates');
+  return { ok: true, added, skipped };
+});
 route('DELETE', '/api/holidays/:id', ({ user, params }) => { need(can(user, 'settings')); run('DELETE FROM holidays WHERE id=?', params.id); return { ok: true }; });
 route('POST', '/api/leave-types', ({ user, body }) => { need(can(user, 'settings')); req_(body, 'name'); try { run('INSERT INTO leave_types(name,days_per_year,is_paid) VALUES(?,?,?)', body.name, +body.days_per_year || 0, body.is_paid ? 1 : 0); } catch { bad('Leave type already exists'); } return { ok: true }; });
 route('PUT', '/api/leave-types/:id', ({ user, params, body }) => { need(can(user, 'settings')); run('UPDATE leave_types SET days_per_year=? WHERE id=?', +body.days_per_year || 0, params.id); return { ok: true }; });

@@ -359,6 +359,8 @@ function policiesCard(p) {
         ${li('Approved claims are paid out with the next payroll')}</ul></div>
     </div></div>`;
 }
+// consecutive days with the same name are one holiday
+const holidayGroups = list => { const out = []; for (const h of list) { const g = out[out.length - 1]; if (g && g.name === h.name && Math.round((new Date(h.date) - new Date(g.to)) / 864e5) === 1) { g.to = h.date; g.days++; } else out.push({ name: h.name, from: h.date, to: h.date, days: 1 }); } return out; };
 PAGES.dashboard = async () => {
   const [d, attHtml] = await Promise.all([api('GET', '/api/dashboard'), isAdmin() ? '' : PAGES.attendance().catch(e => `<div class="card"><p class="err">${esc(e.message)}</p></div>`)]);
   const u = S.user, t = d.today;
@@ -384,7 +386,7 @@ PAGES.dashboard = async () => {
   <div class="grid g2">
     <div class="card"><h2>📢 Announcements</h2>${d.announcements.map(a => `<div style="margin-bottom:12px"><b>${esc(a.title)}</b> <span class="muted">· ${fd(a.created)} · ${esc(a.author)}</span><div>${esc(a.body)}</div></div>`).join('') || '<div class="empty">No announcements</div>'}</div>
     <div>
-      <div class="card"><h2>🎉 Upcoming holidays</h2>${d.holidays.map(h => `<div>${fd(h.date)} — <b>${esc(h.name)}</b></div>`).join('') || '<span class="muted">None upcoming</span>'}</div>
+      <div class="card"><div style="display:flex;align-items:center;gap:8px"><h2 class="grow" style="margin:0">🎉 Upcoming holidays</h2>${can('settings') ? '<button class="btn sm primary" data-act="addHol">+ Add holiday</button>' : ''}</div><div style="margin-top:10px">${holidayGroups(d.holidays).slice(0, 5).map(g => `<div>${g.from === g.to ? fd(g.from) : fd(g.from) + ' – ' + fd(g.to)} — <b>${esc(g.name)}</b>${g.days > 1 ? ` <small class="muted">(${g.days} days)</small>` : ''}</div>`).join('') || '<span class="muted">None upcoming</span>'}</div></div>
       <div class="card staffonly"><h2>🎂 Birthdays this month</h2>${d.birthdays.map(b => `<div>${esc(b.name)} <span class="muted">· ${fd(b.dob).slice(0, 6)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
     </div>
   </div>
@@ -505,7 +507,7 @@ PAGES.attendance = async () => {
     for (let d = 1; d <= days; d++) {
       const ds = `${month}-${String(d).padStart(2, '0')}`, dow = new Date(y, m - 1, d).getDay(), r = byDate[ds], lv = a.leaves.find(l => l.from_date <= ds && l.to_date >= ds);
       const off = dow === 0 || dow === 6;
-      cells += `<div class="day ${off ? 'off' : ''} ${hol[ds] ? 'hol' : ''}"><b>${d}</b> ${r ? badge(r.status) : hol[ds] ? `<span class="badge">${esc(hol[ds])}</span>` : lv ? `<span class="badge approved">${esc(lv.name)}</span>` : a.days?.[ds]?.status === 'absent' ? '<span class="badge rejected">absent</span>' : ''}${r ? `<br><small>${r.check_in || ''}–${r.check_out || ''}${r.hours ? ' · ' + r.hours + 'h' : ''}</small>` : ''}${r && (r.reason || r.late) ? `<br><small class="muted">${r.late ? 'late' : esc(r.reason)}</small>` : ''}</div>`;
+      cells += `<div class="day ${off ? 'off' : ''} ${hol[ds] ? 'hol' : ''}"><b>${d}</b> ${hol[ds] ? `<span class="badge" style="background:#ffedd5;color:#9a3412">🎉 ${esc(hol[ds])}</span>${r ? ' ' : ''}` : ''}${r ? badge(r.status) : hol[ds] ? '' : lv ? `<span class="badge approved">${esc(lv.name)}</span>` : a.days?.[ds]?.status === 'absent' ? '<span class="badge rejected">absent</span>' : ''}${r ? `<br><small>${r.check_in || ''}–${r.check_out || ''}${r.hours ? ' · ' + r.hours + 'h' : ''}</small>` : ''}${r && (r.reason || r.late) ? `<br><small class="muted">${r.late ? 'late' : esc(r.reason)}</small>` : ''}</div>`;
     }
     const cnt = s => a.rows.filter(r => r.status === s).length;
     return head('Attendance', 'Your daily check-ins', `<input type="month" id="attMonth" value="${month}" style="width:auto">`) + tabs +
@@ -1054,7 +1056,8 @@ const A = {
   delDept: id => confirmBox('Delete this department?', async () => { await api('DELETE', '/api/departments/' + id); S.lk = await api('GET', '/api/lookups'); }),
   addLT: () => openForm({ title: 'Add leave type', fields: [{ name: 'name', label: 'Name', required: true }, { name: 'days_per_year', label: 'Days per year (0 = unlimited)', type: 'number', value: 0, min: 0 }, { name: 'is_paid', label: 'Paid leave', type: 'checkbox', value: true }], onSubmit: async v => { await api('POST', '/api/leave-types', v); S.lk = await api('GET', '/api/lookups'); } }),
   editLT: (id, el) => openForm({ title: 'Edit allowance', fields: [{ name: 'days_per_year', label: 'Days per year', type: 'number', min: 0, value: el.dataset.v }], onSubmit: async v => { await api('PUT', '/api/leave-types/' + id, v); S.lk = await api('GET', '/api/lookups'); } }),
-  addHol: () => openForm({ title: 'Add holiday', fields: [{ name: 'date', label: 'Date', type: 'date', required: true }, { name: 'name', label: 'Name', required: true }], onSubmit: v => api('POST', '/api/holidays', v) }),
+  addHol: () => openForm({ title: 'Add holiday', intro: 'It appears on every employee\'s attendance calendar with its name. Holidays are paid: salary is never cut for them.', submit: 'Add holiday', fields: [{ name: 'name', label: 'Holiday name', required: true }, { name: 'date', label: 'Date (first day)', type: 'date', required: true, value: today() }, { name: 'days', label: 'How many days is the holiday?', type: 'number', min: 1, max: 60, value: 1, required: true }],
+    onSubmit: async v => { const r = await api('POST', '/api/holidays', v); toast(`Holiday added (${r.added} day${r.added === 1 ? '' : 's'})` + (r.skipped ? `, ${r.skipped} already existed` : '')); } }),
   delHol: id => confirmBox('Delete this holiday?', () => api('DELETE', '/api/holidays/' + id)),
   exportRep: () => csv(`attendance-${S.repMonth || ym(new Date())}.csv`, [['ID', 'Name', 'Present', 'WFH', 'Half days', 'Absent', 'Hours worked'], ...S._rep.map(r => [r.emp_code, r.name, r.present, r.wfh, r.half, r.absent, r.hours])]),
 };

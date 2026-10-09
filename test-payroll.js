@@ -35,7 +35,8 @@ s = P.buildSlip({ emp, month: MONTH, today: TODAY, cfg: { ...cfg, ot_premium: 10
 
 // joining mid-month, exit, holidays
 s = slip({}, { emp: { ...emp, join_date: '2026-09-15' } }); eq('joined mid-month: earlier days are loss of pay', s.lop_days, wdays.filter(d => d < '2026-09-15').length);
-s = P.buildSlip({ emp, month: MONTH, today: TODAY, cfg, hols: new Set([wdays[5]]), dayOf: () => ({ status: 'office', minutes: 540 }) }); eq('a holiday is not a working day', s.working_days, 21);
+s = P.buildSlip({ emp, month: MONTH, today: TODAY, cfg, hols: new Set([wdays[5]]), dayOf: () => ({ status: 'office', minutes: 540 }) }); eq('a holiday is not a working day', s.working_days, 21); eq('and a holiday never reduces pay: full month still pays 100000 gross', s.gross, 100000);
+s = P.buildSlip({ emp, month: MONTH, today: TODAY, cfg, hols: new Set([wdays[5], wdays[6], wdays[7]]), dayOf: d => new Set([wdays[5], wdays[6], wdays[7]]).has(d) ? { status: 'absent', minutes: 0 } : { status: 'office', minutes: 540 } }); eq('a 3-day holiday: no loss of pay even though nobody punched', [s.working_days, s.lop_days, s.gross], [19, 0, 100000]);
 s = P.buildSlip({ emp, month: '2026-10', today: '2026-10-08', cfg, hols: HOLS, dayOf: () => ({ status: 'office', minutes: 540 }) }); eq('days after today are not penalised', s.lop_days, 0);
 
 // salary day
