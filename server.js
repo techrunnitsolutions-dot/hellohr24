@@ -262,6 +262,7 @@ function createEmployee(body) {
       body.designation, body.manager_id || null, body.join_date, body.gender, body.dob, body.address, sal ? sal.ctc : 0, body.pan, body.bank_account, body.location, body.employment_type || 'Full-time');
     const eid = r.lastInsertRowid;
     if (sal) run('UPDATE employees SET salary_type=?, salary_amount=? WHERE id=?', sal.type, sal.amount, eid);
+    if (acc.role !== 'admin' && (body.punch_anywhere === true || body.punch_anywhere === 'true' || body.punch_anywhere === 1)) run('UPDATE employees SET geo_exempt=1 WHERE id=?', eid);
     ['Collect signed offer letter & ID proofs', 'Create email & system accounts', 'Issue laptop & access card', 'Complete HR induction', 'Assign buddy / reporting manager intro', 'Enroll in mandatory training']
       .forEach(t => run('INSERT INTO checklists(emp_id,kind,title) VALUES(?,?,?)', eid, 'onboarding', t));
     all('SELECT id FROM courses WHERE mandatory=1').forEach(c => run('INSERT OR IGNORE INTO enrollments(emp_id,course_id) VALUES(?,?)', eid, c.id));
@@ -288,6 +289,7 @@ route('PUT', '/api/employees/:id', ({ user, params, body }) => {
     if (isAdm) f.push('email');
     if (isAdm && body.email && body.email !== e.email && get('SELECT id FROM employees WHERE lower(email)=lower(?) AND id!=?', body.email, id)) bad('Email already in use');
     if (body.manager_id && +body.manager_id === id) bad('An employee cannot report to themselves');
+    if ('punch_anywhere' in body && can(user, 'settings') && e.role !== 'admin') run('UPDATE employees SET geo_exempt=? WHERE id=?', body.punch_anywhere === true || body.punch_anywhere === 'true' || body.punch_anywhere === 1 ? 1 : 0, id);
     const upd = f.filter(k => k in body);
     if (can(user, 'payroll') && ('salary_type' in body || 'salary_amount' in body || 'ctc' in body)) {
       const sal = salaryInput({ salary_type: body.salary_type || (('salary_amount' in body) ? e.salary_type : undefined), salary_amount: 'salary_amount' in body ? body.salary_amount : (e.salary_type === 'inhand' ? e.salary_amount : e.ctc), ctc: body.ctc });
@@ -930,6 +932,15 @@ route('PUT', '/api/settings/location', ({ user, body }) => {
   if (!(radius >= 20 && radius <= 1000)) bad('Allowed distance must be between 20 and 1000 metres');
   set('geo_lat', lat); set('geo_lng', lng); set('geo_radius', radius); set('geo_label', String(body.label || '').trim().slice(0, 80));
   return { office: officeLoc(), exempt: exemptIds() };
+});
+// geo-fencing switch of one employee: on = may punch from anywhere, off = must be at the office
+route('POST', '/api/employees/:id/geofence', ({ user, params, body }) => {
+  need(can(user, 'settings'));
+  const e = get('SELECT id, role FROM employees WHERE id=?', params.id); if (!e) bad('Not found', 404);
+  if (e.role === 'admin') bad('Admin accounts do not punch');
+  const on = body.punch_anywhere === true || body.punch_anywhere === 'true' || body.punch_anywhere === 1;
+  run('UPDATE employees SET geo_exempt=? WHERE id=?', on ? 1 : 0, e.id);
+  return { ok: true, punch_anywhere: on, office_set: !!officeLoc() };
 });
 route('PUT', '/api/settings/geofence', ({ user, body }) => {
   need(can(user, 'settings'));
