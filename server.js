@@ -756,24 +756,91 @@ route('GET', '/api/reports/attendance', ({ user, query }) => {
 
 // ---------- employee requests: resignation / transfer / work type ----------
 const WORK_TYPES = ['Office', 'Work from home', 'Hybrid'];
-const canReviewReq = (u, empId) => u.id !== empId && (can(u, 'onboarding') || can(u, 'employees') || teamIds(u).includes(empId));
+const REG_TYPES = ['missed_punch', 'leave_regularise', 'visit'];   // attendance corrections ("regularisation")
+const canReviewReq = (u, empId, type) => u.id !== empId && (can(u, 'onboarding') || can(u, 'employees') || teamIds(u).includes(empId) || (REG_TYPES.includes(type) && can(u, 'attendance')));
 const REQ_SQL = `SELECT r.*, e.name emp_name, e.emp_code, e.designation, d.name dept, a.name decided_by_name FROM requests r JOIN employees e ON e.id=r.emp_id
   LEFT JOIN departments d ON d.id=e.dept_id LEFT JOIN employees a ON a.id=r.decided_by`;
 const parseReq = r => ({ ...r, payload: JSON.parse(r.payload || '{}') });
 function reviewableRequests(user) {
-  const broad = can(user, 'onboarding') || can(user, 'employees'), team = new Set(teamIds(user));
-  if (!broad && !team.size) return [];
-  return all(REQ_SQL + " ORDER BY (r.status='pending') DESC, r.id DESC").filter(r => r.emp_id !== user.id && (broad || team.has(r.emp_id)) && (r.type !== 'password_reset' || user.role === 'admin')).map(parseReq);
+  const broad = can(user, 'onboarding') || can(user, 'employees'), regAll = can(user, 'attendance'), team = new Set(teamIds(user));
+  if (!broad && !regAll && !team.size) return [];
+  return all(REQ_SQL + " ORDER BY (r.status='pending') DESC, r.id DESC").filter(r => r.emp_id !== user.id && (broad || (regAll && REG_TYPES.includes(r.type)) || team.has(r.emp_id)) && (r.type !== 'password_reset' || user.role === 'admin')).map(parseReq);
 }
 route('GET', '/api/requests', ({ user, query }) => {
   if (query.scope === 'manage') return reviewableRequests(user);
   const id = +query.emp_id || user.id; need(id === user.id || canReviewReq(user, id));
   return all(REQ_SQL + ' WHERE r.emp_id=? ORDER BY r.id DESC', id).map(parseReq);
 });
+// punch times of a day merged with what the employee asks to correct (a missing side is taken from what is already recorded)
+function mergedPunch(empId, date, inT, outT) {
+  const sess = all('SELECT * FROM punches WHERE emp_id=? AND date=? ORDER BY id', empId, date), rec = get('SELECT * FROM attendance WHERE emp_id=? AND date=?', empId, date);
+  const cur = { in: (sess[0]?.in_time || rec?.check_in || '').slice(0, 5), out: ((sess.length && sess[sess.length - 1].out_time) || rec?.check_out || '').slice(0, 5) };
+  return { in: inT || cur.in, out: outT || cur.out };
+}
+const HHMM = v => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || ''));
+function regPayload(user, emp, body) {
+  const t = todayStr(), floor = addDays(t, -90), hols = holidaySet(); let p;
+  const inRange = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) || bad('Pick a valid date');
+  if (body.type === 'missed_punch') {
+    req_(body, 'date'); inRange(body.date);
+    if (body.date > t) bad('Attendance corrections are for today or earlier days'); if (body.date < floor) bad('You can correct the last 90 days only'); if (body.date < (emp.join_date || '2000-01-01')) bad('That date is before you joined');
+    const inT = String(body.in_time || '').trim(), outT = String(body.out_time || '').trim();
+    if (!inT && !outT) bad('Enter the punch-in time, the punch-out time, or both');
+    if ((inT && !HHMM(inT)) || (outT && !HHMM(outT))) bad('Enter times like 09:30');
+    const m = mergedPunch(user.id, body.date, inT, outT);
+    if (!m.in || !m.out) bad(!m.out ? 'Enter your punch-out time as well: nothing is recorded for it on that day' : 'Enter your punch-in time as well: nothing is recorded for it on that day');
+    if (m.out <= m.in) bad('Punch-out must be after punch-in');
+    p = { date: body.date, in_time: inT || null, out_time: outT || null, final_in: m.in, final_out: m.out };
+  } else if (body.type === 'leave_regularise') {
+    req_(body, 'date', 'type_id'); inRange(body.date); const to = body.to_date || body.date; inRange(to);
+    if (to < body.date) bad('The end date is before the start date'); if (to > t) bad('Late leave entries are for today or earlier days'); if (body.date < floor) bad('You can correct the last 90 days only'); if (body.date < (emp.join_date || '2000-01-01')) bad('That date is before you joined');
+    const lt = get('SELECT * FROM leave_types WHERE id=?', body.type_id); if (!lt) bad('Choose a leave type');
+    const days = workdaysBetween(body.date, to); if (days <= 0) bad('There are no working days in that range');
+    p = { date: body.date, to_date: to, type_id: lt.id, type_name: lt.name, days };
+  } else {
+    req_(body, 'date', 'start_time', 'end_time', 'place'); inRange(body.date);
+    if (body.date < floor) bad('You can request visits from the last 90 days onwards'); if (body.date > addDays(t, 30)) bad('Visits can be requested up to 30 days ahead'); if (body.date < (emp.join_date || '2000-01-01')) bad('That date is before you joined');
+    if (!HHMM(body.start_time) || !HHMM(body.end_time)) bad('Enter times like 10:00'); if (body.end_time <= body.start_time) bad('The end time must be after the start time');
+    p = { date: body.date, start_time: body.start_time, end_time: body.end_time, place: String(body.place).trim().slice(0, 200) };
+  }
+  if (get("SELECT id FROM requests WHERE emp_id=? AND type=? AND status='pending' AND payload LIKE ?", user.id, body.type, '%"date":"' + p.date + '"%')) bad('You already have a pending request of this kind for that date');
+  return p;
+}
+// what an approved request does to the attendance
+function applyRegularisation(r, p, emp, decider) {
+  const cfg = attCfg(), work = date => isWorkday(date, holidaySet());
+  const log = (date, before, note) => run('INSERT INTO attendance_edits(emp_id,date,before_text,after_text,by_id,at,note) VALUES(?,?,?,?,?,?,?)', emp.id, date, before, describeDay(dayStatus(emp.id, date, cfg, work(date))), decider.id, new Date().toISOString(), note);
+  if (r.type === 'missed_punch') {
+    const before = describeDay(dayStatus(emp.id, p.date, cfg, work(p.date))), rec = get('SELECT * FROM attendance WHERE emp_id=? AND date=?', emp.id, p.date);
+    const m = mergedPunch(emp.id, p.date, p.in_time, p.out_time); if (!m.in || !m.out || m.out <= m.in) bad('The punch times on that day no longer add up; ask the employee to send a new request');
+    removeDayFromLeaves(emp.id, p.date);
+    run('DELETE FROM punches WHERE emp_id=? AND date=?', emp.id, p.date);
+    run('INSERT INTO punches(emp_id,date,in_time,out_time,mode) VALUES(?,?,?,?,?)', emp.id, p.date, m.in + ':00', m.out + ':00', rec?.mode || 'office');
+    run(`INSERT INTO attendance(emp_id,date,check_in,check_out,status,mode,manual) VALUES(?,?,?,?,'present',?,0)
+      ON CONFLICT(emp_id,date) DO UPDATE SET check_in=excluded.check_in, check_out=excluded.check_out, manual=0, mode=excluded.mode`, emp.id, p.date, m.in, m.out, rec?.mode || 'office');
+    const dv = monthMap(emp.id, p.date.slice(0, 7), cfg).days[p.date]; run('UPDATE attendance SET status=? WHERE emp_id=? AND date=?', toStored(dv.status), emp.id, p.date);
+    log(p.date, before, 'Approved: missed punch #' + r.id + ' (' + m.in + ' - ' + m.out + ')');
+  } else if (r.type === 'leave_regularise') {
+    const lt = get('SELECT * FROM leave_types WHERE id=?', p.type_id); if (!lt) bad('That leave type no longer exists');
+    const before = describeDay(dayStatus(emp.id, p.date, cfg, work(p.date)));
+    for (let d = p.date; d <= p.to_date; d = addDays(d, 1)) removeDayFromLeaves(emp.id, d);
+    run('DELETE FROM attendance WHERE emp_id=? AND date>=? AND date<=? AND check_in IS NULL', emp.id, p.date, p.to_date);
+    run("INSERT INTO leaves(emp_id,type_id,from_date,to_date,days,reason,status,approver_id,note,created) VALUES(?,?,?,?,?,?,'approved',?,?,?)", emp.id, lt.id, p.date, p.to_date, workdaysBetween(p.date, p.to_date), r.reason, decider.id, 'Late entry approved (request #' + r.id + ')', todayStr());
+    log(p.date, before, 'Approved: leave entered late #' + r.id);
+  } else if (r.type === 'visit') {
+    const before = describeDay(dayStatus(emp.id, p.date, cfg, work(p.date)));
+    removeDayFromLeaves(emp.id, p.date);
+    run(`INSERT INTO attendance(emp_id,date,check_in,check_out,status,mode,manual) VALUES(?,?,?,?,'present','office',1)
+      ON CONFLICT(emp_id,date) DO UPDATE SET status='present', mode='office', manual=1, check_in=excluded.check_in, check_out=excluded.check_out`, emp.id, p.date, p.start_time, p.end_time);
+    run('DELETE FROM punches WHERE emp_id=? AND date=?', emp.id, p.date);
+    log(p.date, before, 'Approved: site visit #' + r.id + ' - ' + p.place);
+  }
+}
 route('POST', '/api/requests', ({ user, body }) => {
   need(user.role !== 'admin', 'Admin accounts do not raise requests');
   req_(body, 'type', 'reason');
   const emp = get('SELECT * FROM employees WHERE id=?', user.id);
+  if (REG_TYPES.includes(body.type)) { const payload = regPayload(user, emp, body); run('INSERT INTO requests(emp_id,type,payload,reason,created) VALUES(?,?,?,?,?)', user.id, body.type, JSON.stringify(payload), String(body.reason).trim().slice(0, 500), todayStr()); return { ok: true }; }
   if (!['resignation', 'transfer', 'work_type'].includes(body.type)) bad('Unknown request type');
   if (get("SELECT id FROM requests WHERE emp_id=? AND type=? AND status='pending'", user.id, body.type)) bad('You already have a pending request of this type');
   let payload;
@@ -804,7 +871,7 @@ route('POST', '/api/requests/:id/withdraw', ({ user, params }) => {
 });
 route('POST', '/api/requests/:id/decide', ({ user, params, body }) => {
   const r = get('SELECT * FROM requests WHERE id=?', params.id); if (!r) bad('Not found', 404);
-  need(canReviewReq(user, r.emp_id));
+  need(canReviewReq(user, r.emp_id, r.type));
   if (r.type === 'password_reset') { need(user.role === 'admin', 'Only the company admin can handle password resets'); if (body.status === 'approved') bad('Use "Set new password" to approve a password reset'); }
   if (r.status !== 'pending') bad('Already ' + r.status);
   if (!['approved', 'rejected'].includes(body.status)) bad('Invalid status');
@@ -812,6 +879,7 @@ route('POST', '/api/requests/:id/decide', ({ user, params, body }) => {
   tx(() => {
     run('UPDATE requests SET status=?, decided_by=?, note=?, decided_on=? WHERE id=?', body.status, user.id, body.note, todayStr(), r.id);
     if (body.status !== 'approved') return;
+    if (REG_TYPES.includes(r.type)) return applyRegularisation(r, p, emp, user);
     if (r.type === 'work_type') run('UPDATE employees SET work_type=? WHERE id=?', p.to, emp.id);
     else if (r.type === 'transfer') {
       if (p.to_dept_id) run('UPDATE employees SET dept_id=? WHERE id=?', p.to_dept_id, emp.id);
@@ -988,10 +1056,10 @@ const FIELD_RULES = {
 function getProfile(empId) { const r = get('SELECT data FROM profiles WHERE emp_id=?', empId); try { return r ? JSON.parse(r.data) : {}; } catch { return {}; } }
 // what is already known about a person (saved profile + what the admin entered on the employee record), so nothing filled once shows up blank again
 const EMP_TO_PROFILE = { phone: 'phone', dob: 'dob', gender: 'gender', address: 'current_address', pan: 'pan_no', bank_account: 'bank_account_no' };
-function profileFields(empId, saved = getProfile(empId), e = get('SELECT name,phone,dob,gender,address,pan,bank_account FROM employees WHERE id=?', empId)) {
+function profileFields(empId, saved = getProfile(empId), e = get('SELECT name,phone,dob,gender,address,pan,bank_account FROM employees WHERE id=?', empId), forCompletion = false) {
   const out = { ...saved }; if (!e) return out;
   for (const [col, key] of Object.entries(EMP_TO_PROFILE)) { const v = e[col] == null ? '' : String(e[col]).trim(); if (v && !(FIELD_RULES[key] && !FIELD_RULES[key][0](v))) out[key] = v; }
-  if (!out.full_name && e.name) out.full_name = e.name;
+  if (!out.full_name && e.name && !forCompletion) out.full_name = e.name;   // shown as a starting point, but the name "as on Aadhaar" still has to be confirmed by the employee
   return out;
 }
 const docList = empId => all('SELECT id,doc_type,filename,mime,size,uploaded FROM documents WHERE emp_id=? ORDER BY doc_type,id', empId);
@@ -1010,13 +1078,13 @@ function profileCompletionMap() {
   const profs = Object.fromEntries(all('SELECT emp_id,data FROM profiles').map(r => { let d = {}; try { d = JSON.parse(r.data); } catch {} return [r.emp_id, d]; }));
   const docs = {}; for (const r of all('SELECT emp_id, doc_type FROM documents GROUP BY emp_id, doc_type')) (docs[r.emp_id] ||= []).push({ doc_type: r.doc_type });
   const emps = Object.fromEntries(all('SELECT id,name,phone,dob,gender,address,pan,bank_account FROM employees').map(r => [r.id, r]));
-  return id => completion(profileFields(id, profs[id] || {}, emps[id]), docs[id] || []).pct;
+  return id => completion(profileFields(id, profs[id] || {}, emps[id], true), docs[id] || []).pct;
 }
 route('GET', '/api/profile', ({ user, query }) => {
   const id = +query.emp_id || user.id; need(id === user.id || can(user, 'employees'));
   const e = get('SELECT id,name,emp_code,email,designation,role FROM employees WHERE id=?', id); if (!e) bad('Not found', 404);
   const fields = profileFields(id), docs = docList(id);
-  return { employee: e, fields, docs, completion: completion(fields, docs), editable: id === user.id };
+  return { employee: e, fields, docs, completion: completion(profileFields(id, undefined, undefined, true), docs), editable: id === user.id };
 });
 route('PUT', '/api/profile', ({ user, body }) => {
   const f = {};
@@ -1032,7 +1100,7 @@ route('PUT', '/api/profile', ({ user, body }) => {
     run('UPDATE employees SET phone=COALESCE(NULLIF(?,\'\'),phone), dob=COALESCE(NULLIF(?,\'\'),dob), gender=COALESCE(NULLIF(?,\'\'),gender), address=COALESCE(NULLIF(?,\'\'),address), pan=COALESCE(NULLIF(?,\'\'),pan), bank_account=COALESCE(NULLIF(?,\'\'),bank_account) WHERE id=?',
       data.phone || '', data.dob || '', data.gender || '', data.current_address || '', data.pan_no || '', data.bank_account_no || '', user.id);
   });
-  return { ok: true, completion: completion(data, docList(user.id)) };
+  return { ok: true, completion: completion(profileFields(user.id, data, undefined, true), docList(user.id)) };
 });
 route('POST', '/api/profile/documents', ({ user, body }) => {
   const type = body.doc_type, cfg = DOC_TYPES[type]; if (!cfg) bad('Unknown document type');

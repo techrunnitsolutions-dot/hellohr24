@@ -32,9 +32,13 @@ const PERM_DEFS = [
 const PW = { name: 'confirm_password', label: 'Confirm with your password', type: 'password', required: true, full: true };
 const EXP_CATS = ['Travel', 'Rent', 'Accessories & equipment', 'Office supplies', 'Software & subscriptions', 'Utilities', 'Meals & entertainment', 'Accommodation', 'Marketing', 'Maintenance & repairs', 'Internet & phone', 'Training', 'Other'];
 const WORK_TYPES = ['Office', 'Work from home', 'Hybrid'];
-const REQ_LABEL = { resignation: '🚪 Resignation', transfer: '🔁 Transfer', work_type: '🏠 Work type change', password_reset: '🔑 Password reset' };
+const REQ_LABEL = { resignation: '🚪 Resignation', transfer: '🔁 Transfer', work_type: '🏠 Work type change', password_reset: '🔑 Password reset', missed_punch: '🕘 Missed punch', leave_regularise: '🌴 Leave entered late', visit: '📍 Site visit / on duty' };
+const REG_KINDS = ['missed_punch', 'leave_regularise', 'visit'];
 const reqText = r => { const p = r.payload || {};
   if (r.type === 'password_reset') return 'Forgot their password and asked for a new one';
+  if (r.type === 'missed_punch') return `${fd(p.date)}: set ${p.in_time ? 'punch-in <b>' + p.in_time + '</b>' : ''}${p.in_time && p.out_time ? ' and ' : ''}${p.out_time ? 'punch-out <b>' + p.out_time + '</b>' : ''} <small class="muted">(day becomes ${p.final_in}–${p.final_out})</small>`;
+  if (r.type === 'leave_regularise') return `${esc(p.type_name)} · ${fd(p.date)}${p.to_date !== p.date ? ' → ' + fd(p.to_date) : ''} (${p.days} day${p.days === 1 ? '' : 's'})`;
+  if (r.type === 'visit') return `${fd(p.date)} · ${p.start_time}–${p.end_time} at <b>${esc(p.place)}</b>`;
   if (r.type === 'resignation') return `Last working day ${fd(p.last_working_day)}`;
   if (r.type === 'transfer') return `${esc(p.from_dept_name || '—')} → ${esc(p.to_dept_name || p.from_dept_name || 'same department')}${p.to_location ? ' · ' + esc(p.to_location) : ''} from ${fd(p.transfer_date)}`;
   return `${esc(p.from)} → <b>${esc(p.to)}</b> from ${fd(p.worktype_date)}`; };
@@ -366,12 +370,12 @@ PAGES.dashboard = async () => {
   const hr = new Date().getHours(), greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
   const att = !t ? `<p class="muted">You haven't checked in today.</p><button class="btn primary" data-act="checkin" data-id="office">Check in (Office)</button> <button class="btn" data-act="checkin" data-id="wfh">Check in (WFH)</button>`
     : `<p>Checked in at <b>${t.check_in}</b> ${badge(t.status)}${t.late ? ' <span class="badge pending">late</span>' : ''}${t.reason ? ` <small class="muted">${esc(t.reason)}</small>` : ''}${t.check_out ? ` · out at <b>${t.check_out}</b>` : ''}</p>${t.check_out ? '<p class="muted">Have a great evening!</p>' : '<button class="btn danger" data-act="checkout">Check out</button>'}`;
-  return `${head(`${greet}, ${u.name.split(' ')[0]} 👋`, new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}
+  return `${head(`${greet}, ${u.name.split(' ')[0]} 👋`, new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }), isAdmin() ? '' : '<button class="btn" data-act="regRequest">✏️ Attendance correction request</button>')}
   ${punchCard(d)}
   ${isAdmin() ? '' : profileBanner(d)}
   ${isAdmin() ? '' : `<div class="embed">${attHtml}</div>${policiesCard(d.policies)}`}
   ${stats}
-  ${d.pendingRequests ? `<div class="card" style="border-left:4px solid var(--brand)">📨 <b>${d.pendingRequests}</b> pending employee request(s) — resignation, transfer or work type change. <a href="#" data-act="goRequests">Review now</a></div>` : ''}
+  ${d.pendingRequests ? `<div class="card" style="border-left:4px solid var(--brand)">📨 <b>${d.pendingRequests}</b> pending employee request(s) — attendance corrections, resignation, transfer or work type change. <a href="#" data-act="goRequests">Review now</a></div>` : ''}
   ${isAdmin() ? policiesCard(d.policies) : ''}
   <div class="grid g2 personal">
     <div class="card"><h2>📅 This month</h2>${monthSummaryHtml(d.monthSummary)}</div>
@@ -545,9 +549,23 @@ async function adminAttendance() {
 }
 
 // ---- leave ----
+const regCards = () => `<div class="grid g3" style="margin-bottom:16px">
+  <div class="card"><h3 style="margin-top:0">🕘 Forgot to punch in / out</h3><p class="muted">Forgot to punch out, punched in late, or the portal shows a half day for a full day's work.</p><button class="btn primary" data-act="regPunch">Request correction</button></div>
+  <div class="card"><h3 style="margin-top:0">🌴 Forgot to apply leave</h3><p class="muted">You were on leave or work from home and the days have already passed.</p><button class="btn primary" data-act="regLeave">Apply for past days</button></div>
+  <div class="card"><h3 style="margin-top:0">📍 Site visit / on duty</h3><p class="muted">You worked outside the office (client site, meeting, travel) and could not punch in.</p><button class="btn primary" data-act="regVisit">Request visit approval</button></div></div>`;
+async function regTab(tabs, review) {
+  const mine = isAdmin() ? [] : (await api('GET', '/api/requests')).filter(r => REG_KINDS.includes(r.type));
+  const rev = (review ? (await api('GET', '/api/requests?scope=manage')) : []).filter(r => REG_KINDS.includes(r.type)), pend = rev.filter(r => r.status === 'pending').length;
+  return head('Regularisation', 'Fix a missed punch, enter leave you forgot to apply, or get a site visit approved', isAdmin() ? '' : '<button class="btn primary" data-act="regRequest">+ New correction request</button>') + tabs + (isAdmin() ? '' : regCards()) +
+    (isAdmin() ? '' : `<div class="card"><h2>My requests</h2>${reqTable(mine)}</div>`) +
+    (review ? `<div class="card"><h2>Requests to review${pend ? ' (' + pend + ' pending)' : ''}</h2><p class="muted">Approve a request and the employee's attendance changes right away.</p>${reqTable(rev, { withEmp: true, decide: true })}</div>` : '');
+}
 PAGES.leave = async () => {
-  const items = [['mine', 'My leaves'], ['requests', 'Resign · Transfer · Work type']]; if (can('leave') || can('team')) items.push(['approve', 'Approvals']); items.push(['holidays', 'Holidays']);
+  const reviewReg = isAdmin() || can('attendance') || can('onboarding') || can('employees') || can('team');
+  const items = isAdmin() ? [['reg', 'Correction requests'], ['approve', 'Leave approvals'], ['holidays', 'Holidays']] : [['reg', 'Attendance correction'], ['mine', 'My leaves'], ['requests', 'Resign · Transfer · Work type']];
+  if (!isAdmin()) { if (can('leave') || can('team')) items.push(['approve', 'Approvals']); items.push(['holidays', 'Holidays']); }
   const tabs = tabsHtml('leave', items), tab = S.tab.leave;
+  if (tab === 'reg') return regTab(tabs, reviewReg);
   if (tab === 'mine') {
     const [bal, list] = await Promise.all([api('GET', '/api/leaves/balance'), api('GET', '/api/leaves')]);
     const wfhDays = list.filter(l => l.type === 'Work From Home' && l.status === 'approved').reduce((t, l) => t + l.days, 0);
@@ -895,7 +913,7 @@ async function salRowChanged(id, el) {
 
 // ================= nav / router =================
 const NAV = [
-  ['sec', 'Me'], ['dashboard', '🏠', 'Dashboard'], ['myprofile', '🪪', 'Complete profile'], ['attendance', '🕒', 'Attendance'], ['leave', '🌴', 'Leave'], ['payroll', '💰', 'Payroll'], ['performance', '🎯', 'Performance'], ['expenses', '🧾', 'Expenses'], ['learning', '🎓', 'Learning'],
+  ['sec', 'Me'], ['dashboard', '🏠', 'Dashboard'], ['myprofile', '🪪', 'Complete profile'], ['attendance', '🕒', 'Attendance'], ['leave', '📝', 'Regularisation'], ['payroll', '💰', 'Payroll'], ['performance', '🎯', 'Performance'], ['expenses', '🧾', 'Expenses'], ['learning', '🎓', 'Learning'],
   ['sec', 'Company'], ['employees', '👥', 'Employees'], ['announcements', '📢', 'Announcements'], ['helpdesk', '🛟', 'Helpdesk'], ['assets', '💻', 'Assets'],
   ['sec', 'Management', 'staff'], ['recruitment', '🧲', 'Recruitment', 'recruitment'], ['onboarding', '🚪', 'On/Offboarding', 'onboarding'], ['salary', '💵', 'Salary method', 'payroll'], ['location', '📍', 'Office location', 'settings'], ['settings', '⚙️', 'Settings', 'settings'],
 ];
@@ -908,7 +926,7 @@ function buildNav() {
   { let fav = document.querySelector('link[rel=icon]'); if (!fav) { fav = document.createElement('link'); fav.rel = 'icon'; document.head.appendChild(fav); } fav.href = co && co.logo_v ? `/api/logo/${encodeURIComponent(co.code)}?v=${co.logo_v}` : 'data:,'; }
   $('#banner').innerHTML = localStorage.getItem('hh_master_token') ? '<button class="btn sm danger" data-act="backToMaster">← Back to master panel</button>' : (S.user.company ? logoImg(S.user.company, 'sm') + '<b>' + esc(S.user.company.name) + '</b>' : '<b>Platform master panel</b>');
   if (isMaster()) { $('#nav').innerHTML = '<div class="sec">Platform</div><a href="#/companies" data-nav="companies">🏢 Companies</a><a href="#/maccount" data-nav="maccount">🔐 My account</a>'; $('#userbox').innerHTML = '<div style="text-align:right"><b>' + esc(S.user.name) + '</b><br><small class="muted">MASTER</small></div><button class="btn sm" data-act="logout">Sign out</button>'; return; }
-  $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['leave', 'learning', 'myprofile'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && !(n[0] === 'employees' && !(isStaff() || can('team'))) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
+  $('#nav').innerHTML = NAV.filter(n => !(isAdmin() && ['learning', 'myprofile'].includes(n[0])) && !(n[0] === 'attendance' && !isAdmin()) && !(n[0] === 'employees' && !(isStaff() || can('team'))) && ((k) => !k || (k === 'staff' ? isStaff() : can(k)))(n[n[0] === 'sec' ? 2 : 3])).map(n => n[0] === 'sec' ? `<div class="sec">${n[1]}</div>` : `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('');
   $('#userbox').innerHTML = `<div style="text-align:right"><b>${esc(S.user.name)}</b><br><small class="muted">${esc(S.user.role.toUpperCase())} · ${esc(S.user.emp_code)}</small></div><a href="#/profile" class="avatar" title="My account">${initials(S.user.name)}</a><button class="btn sm" data-act="logout">Sign out</button>`;
 }
 async function route() {
@@ -943,6 +961,17 @@ const A = {
   applyLeave: () => openForm({ title: 'Apply for leave / work from home', intro: 'Pick Casual Leave (CL), Privilege Leave (PL), Sick Leave or Work From Home. Your manager will approve it.', fields: [{ name: 'type_id', label: 'Type', type: 'select', options: [...S.lk.leaveTypes].sort((x, y) => (x.kind === 'wfh') - (y.kind === 'wfh') || x.id - y.id).map(t => [t.id, t.name]), required: true },
     { name: 'from_date', label: 'From', type: 'date', required: true, value: today() }, { name: 'to_date', label: 'To', type: 'date', required: true, value: today() }, { name: 'half_day', label: 'Half day (single date only)', type: 'checkbox', full: true }, { name: 'reason', label: 'Reason', type: 'textarea', required: true }],
     submit: 'Submit request', onSubmit: async v => { const r = await api('POST', '/api/leaves', v); toast(`Request sent for ${r.days} day(s)`); } }),
+  regRequest: () => modal(`<h2>Attendance correction request</h2><p class="muted">What do you need to fix?</p><div style="display:flex;flex-direction:column;gap:8px"><button class="btn primary" data-act="regPunch">🕘 I forgot to punch in / punch out</button><button class="btn primary" data-act="regLeave">🌴 I forgot to apply for leave</button><button class="btn primary" data-act="regVisit">📍 I was on a site visit / office work outside</button></div><div class="actions"><button class="btn" data-act="closeModal">Cancel</button></div>`),
+  regPunch: () => { closeModal(); setTimeout(() => openForm({ title: 'Missed punch correction', intro: 'Enter the real time(s). Leave a box empty if that punch is already correct. Your manager, HR or admin will approve it and your attendance for that day is recalculated from the corrected times.', submit: 'Send request', fields: [
+    { name: 'date', label: 'Date', type: 'date', required: true, value: today(), max: today() }, { name: 'in_time', label: 'Punch-in time (if you forgot or were late)', type: 'time' }, { name: 'out_time', label: 'Punch-out time (if you forgot)', type: 'time' }, { name: 'reason', label: 'Reason', type: 'textarea', required: true }],
+    onSubmit: async v => { await api('POST', '/api/requests', { type: 'missed_punch', ...v }); toast('Request sent for approval'); } }), 60); },
+  regLeave: () => { closeModal(); setTimeout(() => openForm({ title: 'Leave for days that already passed', intro: 'Use this when you forgot to apply. Once approved, those days show as leave instead of absent.', submit: 'Send request', fields: [
+    { name: 'type_id', label: 'Type', type: 'select', options: [...S.lk.leaveTypes].sort((x, y) => (x.kind === 'wfh') - (y.kind === 'wfh') || x.id - y.id).map(t => [t.id, t.name]), required: true },
+    { name: 'date', label: 'From', type: 'date', required: true, value: today(), max: today() }, { name: 'to_date', label: 'To', type: 'date', required: true, value: today(), max: today() }, { name: 'reason', label: 'Reason', type: 'textarea', required: true }],
+    onSubmit: async v => { await api('POST', '/api/requests', { type: 'leave_regularise', ...v }); toast('Request sent for approval'); } }), 60); },
+  regVisit: () => { closeModal(); setTimeout(() => openForm({ title: 'Site visit / on-duty request', intro: 'Worked away from the office for the company? Tell us where and when. Once approved, that day shows as present.', submit: 'Send request', fields: [
+    { name: 'date', label: 'Date', type: 'date', required: true, value: today() }, { name: 'place', label: 'Place / client / site', required: true }, { name: 'start_time', label: 'Start time', type: 'time', required: true }, { name: 'end_time', label: 'End time', type: 'time', required: true }, { name: 'reason', label: 'Reason / purpose', type: 'textarea', required: true }],
+    onSubmit: async v => { await api('POST', '/api/requests', { type: 'visit', ...v }); toast('Request sent for approval'); } }), 60); },
   cancelLeave: id => confirmBox('Cancel this leave request?', () => api('POST', `/api/leaves/${id}/cancel`)),
   decideLeave: (id, el) => openForm({ title: el.dataset.v === 'approved' ? 'Approve leave' : 'Reject leave', fields: [{ name: 'note', label: 'Note (optional)', type: 'textarea' }], submit: 'Confirm', onSubmit: v => api('POST', `/api/leaves/${id}/decide`, { status: el.dataset.v, note: v.note }) }),
   runPayroll: () => openForm({ title: 'Run payroll', intro: 'Creates (or recalculates) a draft for the month using attendance and approved leave. Review it, then finalize to publish payslips.', fields: [{ name: 'month', label: 'Month', type: 'month', value: S.payMonth || ym(new Date()), required: true }], submit: 'Calculate', onSubmit: async v => { const r = await api('POST', '/api/payroll/runs', v); setTimeout(() => A.viewRun(r.id), 100); } }),

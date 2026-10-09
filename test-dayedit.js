@@ -39,8 +39,8 @@ const workday = s => ![0, 6].includes(new Date(s + 'T00:00:00Z').getUTCDay());
   const pend = (await api('GET', '/api/leaves?scope=manage', mgr)).body.find(l => l.reason === 'trip'); await api('POST', `/api/leaves/${pend.id}/decide`, mgr, { status: 'approved' });
   ok('middle day edited to present', (await edit(days3[1], 'present')).status === 200);
   const mine = (await api('GET', '/api/leaves?scope=manage', at)).body.filter(l => l.emp_id === eid && l.status === 'approved' && l.reason === 'trip');
-  ok('leave split into two approved parts of one day each', mine.length === 2 && mine.every(l => l.days === 1) && mine.some(l => l.from_date === days3[0]) && mine.some(l => l.from_date === days3[2]), JSON.stringify(mine.map(l => [l.from_date, l.to_date, l.days])));
-  const cm = (await api('GET', `/api/attendance?month=${days3[0].slice(0, 7)}&emp_id=${eid}`, at)).body.days; ok('first and last day still leave, middle present', cm[days3[0]]?.status === 'leave' && cm[days3[2]]?.status === 'leave' && cm[days3[1]]?.status === 'office', JSON.stringify([days3.map(d => cm[d]?.status)]));
+  ok('leave split into two approved parts of one day each', mine.length === 2 && mine.every(l => l.days === 1) && mine.some(l => l.from_date === days3[0]) && mine.some(l => l.from_date <= days3[2] && l.to_date >= days3[2]), JSON.stringify(mine.map(l => [l.from_date, l.to_date, l.days])));
+  const cm = {}; for (const m of new Set(days3.map(d => d.slice(0, 7)))) Object.assign(cm, (await api('GET', `/api/attendance?month=${m}&emp_id=${eid}`, at)).body.days);   // the three days can straddle a month end ok('first and last day still leave, middle present', cm[days3[0]]?.status === 'leave' && cm[days3[2]]?.status === 'leave' && cm[days3[1]]?.status === 'office', JSON.stringify([days3.map(d => cm[d]?.status)]));
 
   // validation + permissions
   let sat = d1; while (workday(sat)) sat = addD(sat, 1);
