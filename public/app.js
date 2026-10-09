@@ -384,7 +384,7 @@ PAGES.dashboard = async () => {
     <div class="card"><h2>Leave balance</h2>${d.balances.filter(b => b.days_per_year).map(b => `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between"><span>${esc(b.name)}</span><b>${b.balance} / ${b.days_per_year}</b></div>${bar(100 - (b.balance / b.days_per_year) * 100)}</div>`).join('')}</div>
   </div>
   <div class="grid g2">
-    <div class="card"><h2>📢 Announcements</h2>${d.announcements.map(a => `<div style="margin-bottom:12px"><b>${esc(a.title)}</b> <span class="muted">· ${fd(a.created)} · ${esc(a.author)}</span><div>${esc(a.body)}</div></div>`).join('') || '<div class="empty">No announcements</div>'}</div>
+    <div class="card"><h2>📢 Announcements</h2>${d.announcements.map(a => `<div style="margin-bottom:12px"><b>${esc(a.title)}</b> <span class="muted">· ${fd(a.created)} · ${esc(a.author)}</span><div style="white-space:pre-wrap">${esc(a.body)}</div>${a.attachment ? `<div style="margin-top:4px">📎 ${annFileBtn(a.attachment)}</div>` : ''}${a.reply_needed ? ` <button class="btn sm primary" data-act="annOpen" data-id="${a.id}" style="margin-top:4px">Reply needed: submit now</button>` : ''}</div>`).join('') || '<div class="empty">No announcements</div>'}</div>
     <div>
       <div class="card"><div style="display:flex;align-items:center;gap:8px"><h2 class="grow" style="margin:0">🎉 Upcoming holidays</h2>${can('settings') ? '<button class="btn sm primary" data-act="addHol">+ Add holiday</button>' : ''}</div><div style="margin-top:10px">${holidayGroups(d.holidays).slice(0, 5).map(g => `<div>${g.from === g.to ? fd(g.from) : fd(g.from) + ' – ' + fd(g.to)} — <b>${esc(g.name)}</b>${g.days > 1 ? ` <small class="muted">(${g.days} days)</small>` : ''}</div>`).join('') || '<span class="muted">None upcoming</span>'}</div></div>
       <div class="card staffonly"><h2>🎂 Birthdays this month</h2>${d.birthdays.map(b => `<div>${esc(b.name)} <span class="muted">· ${fd(b.dob).slice(0, 6)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
@@ -452,6 +452,7 @@ PAGES.employee = async id => {
   return `<p><a href="#/employees">← Employees</a></p><div class="card" style="display:flex;gap:18px;align-items:center;flex-wrap:wrap"><span class="avatar lg">${initials(e.name)}</span>
     <div class="grow"><h1>${esc(e.name)} ${badge(e.status)} ${e.role === 'admin' ? '<span class="badge approved">Admin</span>' : e.role === 'manager' ? '<span class="badge pending">Managing access</span>' : ''}</h1><div class="muted">${esc(e.designation || '')} · ${esc(e.dept || '')}</div>${e.today ? `<div style="margin-top:6px">Today: ${stBadge(e.today)}${e.today.check_in ? ` <small class="muted">in ${e.today.check_in}${e.today.check_out ? ' · out ' + e.today.check_out : ''}</small>` : ''}</div>` : ''}${e.exit_date ? `<div class="err">Last working day: ${fd(e.exit_date)} ${e.exit_reason ? '— ' + esc(e.exit_reason) : ''}</div>` : ''}</div>
     ${can('settings') && e.role !== 'admin' && e.status !== 'exited' ? `<button type="button" class="geoswitch ${e.geo_exempt ? 'on' : ''}" data-act="togGeo" data-id="${e.id}" data-on="${e.geo_exempt ? 1 : 0}" role="switch" aria-checked="${e.geo_exempt ? 'true' : 'false'}" title="Geo-fencing: switch on to let this employee punch from anywhere"><span class="knob"></span><span class="gl"><b>📍 Punch from anywhere: ${e.geo_exempt ? 'ON' : 'OFF'}</b><small>${e.geo_exempt ? 'Can punch in / out from any place' : 'Must be at the office to punch'}</small></span></button>` : ''}
+    ${e.reply_count !== undefined && e.role !== 'admin' ? `<button class="btn" data-act="empReplies" data-id="${e.id}" data-name="${esc(e.name)}">📨 Replies${e.reply_count ? ' (' + e.reply_count + ')' : ''}</button>` : ''}
     ${canEdit ? `<button class="btn" data-act="editEmp" data-id="${e.id}">Edit</button>` : ''}${own && !canEdit ? `<button class="btn" data-act="editSelf" data-id="${e.id}">Update my details</button>` : ''}
     ${can('onboarding') && e.status === 'active' && e.role !== 'admin' ? `<button class="btn danger" data-act="offboard" data-id="${e.id}">Start offboarding</button>` : ''}
     ${can('onboarding') && e.status === 'notice' ? `<button class="btn" data-act="cancelExit" data-id="${e.id}">Cancel exit</button>` : ''}</div>
@@ -764,10 +765,80 @@ PAGES.learning = async () => {
 };
 
 // ---- announcements ----
+const ANN_ACCEPT = 'image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt';
+const ANN_MIME = { pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
+async function annFilePayload(file) {   // images are shrunk like profile photos; other files go as they are (max 3 MB)
+  if (/^image\//.test(file.type)) return { mime: 'image/jpeg', data: await imageToJpegB64(file, 1600), filename: file.name.replace(/\.\w+$/, '') + '.jpg' };
+  const ext = (file.name.split('.').pop() || '').toLowerCase(), mime = ANN_MIME[ext] || file.type; if (!Object.values(ANN_MIME).includes(mime)) throw new Error('Attach a PDF, image, Word, Excel or text file');
+  if (file.size > 3e6) throw new Error('That file is larger than 3 MB'); return { mime, data: await readB64(file), filename: file.name };
+}
+async function annBlob(id) { const r = await fetch('/api/announcement-files/' + id, { headers: { Authorization: 'Bearer ' + S.token } }); if (!r.ok) throw new Error('Could not load the file'); return r.blob(); }
+const annFileBtn = (f, label) => f ? `<button type="button" class="btn sm" data-act="annDownload" data-id="${f.file_id}" data-name="${esc(f.filename)}">⬇ ${label || esc(f.filename)}</button> <small class="muted">${fmtSize(f.size)}</small>` : '';
+const annNeeds = a => [a.ask_file ? 'a file / image' : '', a.ask_reply ? 'a written reply' : ''].filter(Boolean).join(' and ');
 PAGES.announcements = async () => {
-  const list = await api('GET', '/api/announcements');
-  return head('Announcements', 'Company-wide updates', can('announcements') ? '<button class="btn primary" data-act="addAnn">+ Post</button>' : '') +
-    (list.map(a => `<div class="card"><div style="display:flex"><h2 class="grow">${esc(a.title)}</h2>${can('announcements') ? `<button class="btn sm" data-act="delAnn" data-id="${a.id}">Delete</button>` : ''}</div><div class="muted">${fd(a.created)} · ${esc(a.author)}</div><p>${esc(a.body)}</p></div>`).join('') || '<div class="card empty">Nothing posted.</div>');
+  const list = await api('GET', '/api/announcements'), staff = can('announcements');
+  return head('Announcements', staff ? 'Updates for everyone or chosen people, with files and replies' : 'Company updates', staff ? '<button class="btn primary" data-act="addAnn">+ Post</button>' : '') +
+    (list.map(x => `<div class="card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h2 class="grow" style="margin:0">${esc(x.title)}</h2>${staff ? `<button class="btn sm" data-act="delAnn" data-id="${x.id}">Delete</button>` : ''}</div>
+      <div class="muted">${fd(x.created)} · ${esc(x.author || '')}${staff ? ' · ' + (x.audience === 'selected' ? `<b>${x.target_count}</b> selected employee${x.target_count === 1 ? '' : 's'}` : 'all employees') : ''}</div>
+      <p style="white-space:pre-wrap">${esc(x.body)}</p>
+      ${x.attachment ? `<div style="margin:8px 0">📎 ${annFileBtn(x.attachment)}</div>` : ''}
+      ${x.ask_file || x.ask_reply ? `<div style="margin-top:8px">${staff ? `<span class="badge pending">Needs ${annNeeds(x)}</span> <button class="btn sm" data-act="annReplies" data-id="${x.id}">${x.reply_count} of ${x.target_count} replied · view</button>` : x.replied ? '<span class="badge present">✓ You replied</span>' : `<span class="badge pending">Reply needed: ${annNeeds(x)}</span> <button class="btn sm primary" data-act="annOpen" data-id="${x.id}">Reply now</button>`}</div>` : ''}</div>`).join('') || '<div class="card empty">Nothing posted.</div>');
+};
+
+// the pop-up an employee must answer: closing it with ✕ is allowed, but it opens again at the next login until it is submitted
+function annPopup(list, i = 0) {
+  const x = list[i]; if (!x) return;
+  S._annList = list; S._annIdx = i;
+  modal(`<div style="display:flex;align-items:flex-start;gap:10px"><h2 class="grow" style="margin:0">📢 ${esc(x.title)}</h2><button type="button" class="annx" data-act="annClose" aria-label="Close" title="Close (it will appear again next time you sign in)">✕</button></div>
+    <div class="muted" style="margin:4px 0 8px">${fd(x.created)} · ${esc(x.author || '')}${list.length > 1 ? ' · ' + (i + 1) + ' of ' + list.length + ' waiting' : ''}</div>
+    <p style="white-space:pre-wrap">${esc(x.body)}</p>
+    ${x.attachment ? `<div style="margin:8px 0">📎 ${annFileBtn(x.attachment)}</div>` : ''}
+    <form id="annForm" data-id="${x.id}"><div class="notice-req">You need to send ${annNeeds(x)} to complete this.</div>
+      ${x.ask_reply ? '<label>Your reply<textarea name="text" rows="4" required></textarea></label>' : ''}
+      ${x.ask_file ? '<label>Attach file or image<input type="file" name="file" accept="' + ANN_ACCEPT + '" required></label>' : ''}
+      <div class="err" id="annErr"></div><div class="actions"><button type="submit" class="btn primary">Submit</button></div></form>
+    <small class="muted">You can close this with ✕, but it will come back each time you sign in until you submit.</small>`);
+  $('#annForm').addEventListener('submit', async e => {
+    e.preventDefault(); const f = e.target.elements, btn = e.target.querySelector('button[type=submit]'); btn.disabled = true;
+    try {
+      const body = {}; if (f.text) body.text = f.text.value; if (f.file) { if (!f.file.files[0]) throw new Error('Please attach the file or image'); body.file = await annFilePayload(f.file.files[0]); }
+      await api('POST', `/api/announcements/${x.id}/reply`, body); toast('Submitted ✓ Thank you');
+      const rest = list.filter(y => y.id !== x.id); closeModal(); if (rest.length) setTimeout(() => annPopup(rest, 0), 300); if (location.hash.startsWith('#/announcements') || location.hash.startsWith('#/dashboard')) route();
+    } catch (err) { $('#annErr').textContent = err.message; btn.disabled = false; }
+  });
+}
+async function checkAnnouncementPopup() {
+  if (isMaster() || isAdmin() || S._annShown) return; S._annShown = true;
+  try { const list = await api('GET', '/api/announcements/pending'); if (list.length) annPopup(list, 0); } catch (e) { /* the pop-up is a reminder; never block the app */ }
+}
+const ANN_ACTIONS = {
+  annDownload: async (id, el) => saveBlob(await annBlob(+id), el.dataset.name || 'file'),
+  annClose: () => closeModal(),
+  annOpen: async id => { const list = await api('GET', '/api/announcements/pending'), i = list.findIndex(y => y.id == id); if (i < 0) { toast('Already submitted'); return route(); } annPopup([list[i], ...list.filter((_, j) => j !== i)], 0); },
+  annReplies: async id => {
+    const r = await api('GET', `/api/announcements/${id}/replies`);
+    modal(`<h2>Replies: ${esc(r.announcement.title)}</h2><p class="muted">${r.people.filter(p => p.reply).length} of ${r.people.length} replied</p>${table([{ h: 'Employee', f: p => `<a href="#/employee/${p.emp_id}" data-act="closeModal"><b>${esc(p.name)}</b></a><br><small class="muted">${esc(p.emp_code)}</small>` },
+      { h: 'Status', f: p => p.reply ? '<span class="badge present">Replied</span><br><small class="muted">' + new Date(p.reply.created).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + '</small>' : '<span class="badge pending">Pending</span>' },
+      { h: 'Reply', f: p => p.reply ? esc(p.reply.text || '—') : '' }, { h: 'File', f: p => p.reply ? annFileBtn(p.reply.file, 'Download') : '' }], r.people, 'Nobody to show.')}<div class="actions"><button class="btn" data-act="closeModal">Close</button></div>`, true);
+  },
+  empReplies: async (id, el) => {
+    const list = await api('GET', `/api/employees/${id}/replies`);
+    modal(`<h2>📨 Replies from ${esc(el.dataset.name || 'employee')}</h2>${table([{ h: 'Announcement', f: r => '<b>' + esc(r.title) + '</b>' }, { h: 'Sent', f: r => new Date(r.created).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) },
+      { h: 'Reply', f: r => esc(r.text || '—') }, { h: 'Document', f: r => annFileBtn(r.file, 'Download') || '<span class="muted">—</span>' }], list, 'No replies yet.')}<div class="actions"><button class="btn" data-act="closeModal">Close</button></div>`, true);
+  },
+  addAnn: () => openForm({ title: 'Post announcement', wide: true, submit: 'Post', intro: 'Choose who gets it, attach a file they can download, and optionally ask them to send something back.', fields: [
+    { name: 'title', label: 'Title', required: true, full: true }, { name: 'body', label: 'Message', type: 'textarea', required: true },
+    { name: 'audience', label: 'Send to', type: 'select', options: [['all', 'All employees'], ['selected', 'Selected employees (choose below)']], value: 'all', full: true },
+    { name: 'emp_ids', label: 'Select employees (tick one or more)', type: 'checks', showIf: 'audience=selected', options: S.lk.employees.filter(e => e.role !== 'admin' && e.status !== 'exited').map(e => [String(e.id), `${e.name} (${e.emp_code})`, e.designation || '']) },
+    { name: 'attachment', label: 'Attach a file or image employees can download (optional)', type: 'file', accept: ANN_ACCEPT, full: true },
+    { name: 'ask_file', label: 'Ask employees to upload a file / image back (they must attach one to submit)', type: 'checkbox', full: true },
+    { name: 'ask_reply', label: 'Ask employees to write a reply (they must submit one)', type: 'checkbox', full: true }],
+    onSubmit: async v => {
+      const body = { title: v.title, body: v.body, audience: v.audience, emp_ids: v.audience === 'selected' ? v.emp_ids : [], ask_file: v.ask_file, ask_reply: v.ask_reply };
+      if (v.audience === 'selected' && !v.emp_ids.length) throw new Error('Tick at least one employee');
+      if (v.attachment) body.attachment = await annFilePayload(v.attachment);
+      await api('POST', '/api/announcements', body); toast('Announcement posted');
+    } }),
 };
 
 // ---- settings (HR) ----
@@ -944,7 +1015,7 @@ async function route() {
   try { $('#main').innerHTML = await fn(arg); if (isAdmin()) document.querySelectorAll('#main .personal').forEach(n => n.remove()); if (!isStaff()) document.querySelectorAll('#main .staffonly').forEach(n => n.remove()); labelTables($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="err">${esc(e.message)}</p></div>`; }
   if (page === 'profile' || page === 'maccount') $('#pwForm')?.addEventListener('submit', async e => { e.preventDefault(); const f = e.target.elements; try { await api('POST', page === 'maccount' ? '/api/master/change-password' : '/api/change-password', { current: f.current.value, next: f.next.value }); toast('Password updated'); e.target.reset(); $('#pwErr').textContent = ''; } catch (er) { $('#pwErr').textContent = er.message; } });
 }
-function logoutLocal() { document.title = 'HelloHR - HR Management Portal';  localStorage.removeItem('hh_master_token'); S.user = null; S.token = null; localStorage.removeItem('hh_token'); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); }
+function logoutLocal() { S._annShown = false; document.title = 'HelloHR - HR Management Portal';  localStorage.removeItem('hh_master_token'); S.user = null; S.token = null; localStorage.removeItem('hh_token'); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); }
 
 // ================= actions =================
 const A = {
@@ -1053,7 +1124,6 @@ const A = {
   delAsset: id => confirmBox('Delete this asset?', () => api('DELETE', '/api/assets/' + id)),
   addCourse: () => openForm({ title: 'Add course', fields: [{ name: 'title', label: 'Title', required: true }, { name: 'description', label: 'Description', type: 'textarea' }, { name: 'duration', label: 'Duration' }, { name: 'mandatory', label: 'Mandatory for all employees', type: 'checkbox' }], onSubmit: v => api('POST', '/api/courses', v) }),
   courseProg: (id, el) => openForm({ title: 'Course progress', fields: [{ name: 'progress', label: 'Completion (%)', type: 'number', min: 0, max: 100, value: el.dataset.v }], onSubmit: v => api('POST', `/api/courses/${id}/progress`, v) }),
-  addAnn: () => openForm({ title: 'Post announcement', fields: [{ name: 'title', label: 'Title', required: true }, { name: 'body', label: 'Message', type: 'textarea', required: true }], submit: 'Post', onSubmit: v => api('POST', '/api/announcements', v) }),
   delAnn: id => confirmBox('Delete announcement?', () => api('DELETE', '/api/announcements/' + id)),
   addDept: () => openForm({ title: 'Add department', fields: [{ name: 'name', label: 'Name', required: true }], onSubmit: async v => { await api('POST', '/api/departments', v); S.lk = await api('GET', '/api/lookups'); } }),
   delDept: id => confirmBox('Delete this department?', async () => { await api('DELETE', '/api/departments/' + id); S.lk = await api('GET', '/api/lookups'); }),
@@ -1067,6 +1137,7 @@ const A = {
 
 Object.assign(A, MASTER_ACTIONS);
 Object.assign(A, SAL_ACTIONS);
+Object.assign(A, ANN_ACTIONS);
 Object.assign(A, PROFILE_ACTIONS);
 Object.assign(A, DAY_EDIT_ACTIONS);
 document.addEventListener('click', e => {
@@ -1130,6 +1201,7 @@ async function start() {
     const onMasterPage = ['#/companies', '#/maccount'].includes(location.hash);
     if (!location.hash || isMaster() !== onMasterPage) location.hash = isMaster() ? '#/companies' : '#/dashboard';
     route();
+    checkAnnouncementPopup();
   } catch { logoutLocal(); }
 }
 if (S.token) start(); else $('#login').classList.remove('hidden');

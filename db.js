@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY, emp_id INTEGER, revie
 CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY, emp_id INTEGER, category TEXT, amount REAL, date TEXT, description TEXT, status TEXT DEFAULT 'pending', decided_by INTEGER, reimbursed_run INTEGER, created TEXT);
 CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, emp_id INTEGER, subject TEXT, category TEXT, description TEXT, status TEXT DEFAULT 'open', response TEXT, created TEXT);
 CREATE TABLE IF NOT EXISTS assets(id INTEGER PRIMARY KEY, name TEXT, tag TEXT UNIQUE, category TEXT, assigned_to INTEGER, status TEXT DEFAULT 'available', assigned_on TEXT);
-CREATE TABLE IF NOT EXISTS announcements(id INTEGER PRIMARY KEY, title TEXT, body TEXT, author_id INTEGER, created TEXT);
+CREATE TABLE IF NOT EXISTS announcements(id INTEGER PRIMARY KEY, title TEXT, body TEXT, author_id INTEGER, created TEXT, audience TEXT DEFAULT 'all', target_ids TEXT, ask_file INTEGER DEFAULT 0, ask_reply INTEGER DEFAULT 0, att_file_id INTEGER);
+CREATE TABLE IF NOT EXISTS announcement_files(id INTEGER PRIMARY KEY, ann_id INTEGER NOT NULL, kind TEXT NOT NULL, emp_id INTEGER, filename TEXT, mime TEXT, size INTEGER, data TEXT, uploaded TEXT);
+CREATE TABLE IF NOT EXISTS announcement_replies(id INTEGER PRIMARY KEY, ann_id INTEGER NOT NULL, emp_id INTEGER NOT NULL, text TEXT, file_id INTEGER, created TEXT, UNIQUE(ann_id,emp_id));
 CREATE TABLE IF NOT EXISTS courses(id INTEGER PRIMARY KEY, title TEXT, description TEXT, duration TEXT, mandatory INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS enrollments(id INTEGER PRIMARY KEY, emp_id INTEGER, course_id INTEGER, progress INTEGER DEFAULT 0, UNIQUE(emp_id,course_id));
 CREATE TABLE IF NOT EXISTS salary_log(id INTEGER PRIMARY KEY, emp_id INTEGER NOT NULL, kind TEXT, before_text TEXT, after_text TEXT, by_id INTEGER, at TEXT);
@@ -115,7 +117,7 @@ CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, company_id INTEGER, 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_co_admin ON companies(lower(admin_email));
 CREATE UNIQUE INDEX IF NOT EXISTS ux_co_prefix ON companies(upper(emp_prefix));
 `;
-const TENANT_TABLES = ['departments', 'employees', 'attendance', 'punches', 'settings', 'requests', 'leave_types', 'leaves', 'holidays', 'payruns', 'payslips', 'jobs', 'candidates', 'checklists', 'goals', 'reviews', 'expenses', 'tickets', 'assets', 'announcements', 'courses', 'enrollments', 'profiles', 'documents', 'attendance_edits', 'salary_log'];
+const TENANT_TABLES = ['departments', 'employees', 'attendance', 'punches', 'settings', 'requests', 'leave_types', 'leaves', 'holidays', 'payruns', 'payslips', 'jobs', 'candidates', 'checklists', 'goals', 'reviews', 'expenses', 'tickets', 'assets', 'announcements', 'courses', 'enrollments', 'profiles', 'documents', 'attendance_edits', 'salary_log', 'announcement_files', 'announcement_replies'];
 const MASTER_TABLES = ['masters', 'companies', 'sessions'];
 
 // ================= SQLite -> Postgres translation =================
@@ -153,7 +155,7 @@ function pgHandle(schema, tables) {
   };
 }
 const schemaOf = file => 'c_' + String(file).replace(/\.db$/, '').replace(/[^a-z0-9]/gi, '_').toLowerCase();
-const TENANT_MIGRATIONS = "ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_type TEXT DEFAULT 'ctc'; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_amount DOUBLE PRECISION; " + 'ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_pay DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS partial_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION;';
+const TENANT_MIGRATIONS = "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS audience TEXT DEFAULT 'all'; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS target_ids TEXT; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS ask_file INTEGER DEFAULT 0; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS ask_reply INTEGER DEFAULT 0; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS att_file_id INTEGER; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_type TEXT DEFAULT 'ctc'; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_amount DOUBLE PRECISION; " + 'ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_pay DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS partial_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION;';
 function pgEnsureSchema(schema, ddl, extra = '') {
   pgCall(`BEGIN; SELECT pg_advisory_xact_lock(727274); CREATE SCHEMA IF NOT EXISTS "${schema}"; SET LOCAL search_path TO "${schema}"; ${ddlToPg(ddl)} ${extra} COMMIT;`, [], true);
 }
@@ -189,6 +191,7 @@ if (IS_PG) {
       const t = open(path.isAbsolute(file) ? file : path.join(DATA, file), SCHEMA);
       ensure(t, 'employees', { permissions: 'TEXT', work_type: "TEXT DEFAULT 'Office'", geo_exempt: 'INTEGER DEFAULT 0', salary_type: "TEXT DEFAULT 'ctc'", salary_amount: 'REAL' });
       ensure(t, 'attendance', { manual: 'INTEGER DEFAULT 0' });
+      ensure(t, 'announcements', { audience: "TEXT DEFAULT 'all'", target_ids: 'TEXT', ask_file: 'INTEGER DEFAULT 0', ask_reply: 'INTEGER DEFAULT 0', att_file_id: 'INTEGER' });
       ensure(t, 'payslips', { ot_hours: 'REAL', ot_pay: 'REAL', partial_hours: 'REAL', hourly_rate: 'REAL' });
       ensure(t, 'leave_types', { kind: "TEXT DEFAULT 'leave'" });
       ensure(t, 'punches', { in_lat: 'REAL', in_lng: 'REAL', in_acc: 'REAL', in_dist: 'REAL', in_away: 'INTEGER DEFAULT 0', out_lat: 'REAL', out_lng: 'REAL', out_acc: 'REAL', out_dist: 'REAL', out_away: 'INTEGER DEFAULT 0' });

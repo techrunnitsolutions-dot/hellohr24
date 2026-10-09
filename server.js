@@ -173,7 +173,7 @@ route('GET', '/api/lookups', ({ user }) => {
 });
 route('GET', '/api/dashboard', ({ user }) => {
   const today = todayStr(), month = today.slice(0, 7), out = {};
-  out.announcements = all('SELECT a.*, e.name author FROM announcements a LEFT JOIN employees e ON e.id=a.author_id ORDER BY a.id DESC LIMIT 5');
+  out.announcements = annView(user, all('SELECT a.*, e.name author FROM announcements a LEFT JOIN employees e ON e.id=a.author_id ORDER BY a.id DESC LIMIT 40')).slice(0, 5);
   out.holidays = all('SELECT * FROM holidays WHERE date>=? ORDER BY date LIMIT 30', today);
   { const pu = buildPunch(user.id); out.punch = pu; out.today = pu.first_in ? { status: toStored(pu.status), check_in: pu.first_in, check_out: pu.last_out } : null; out.monthSummary = pu.month; }
   out.balances = leaveBalance(user.id);
@@ -232,6 +232,7 @@ route('GET', '/api/employees/:id', ({ user, params }) => {
   const assets = pub.pan !== undefined ? all('SELECT * FROM assets WHERE assigned_to=?', e.id) : [];
   if (can(user, 'attendance') && e.role !== 'admin' && e.status !== 'exited') pub.today = dayStatus(e.id, todayStr(), attCfg(), isWorkday(todayStr(), holidaySet()));
   if (user.id === e.id || canReviewReq(user, e.id)) { pub.requests = all(REQ_SQL + ' WHERE r.emp_id=? ORDER BY r.id DESC', e.id).map(parseReq); pub.requests_can_decide = canReviewReq(user, e.id); }
+  if (can(user, 'announcements') || can(user, 'employees')) pub.reply_count = get('SELECT COUNT(*) c FROM announcement_replies WHERE emp_id=?', e.id).c;
   return { ...pub, assets, reports: all('SELECT id,name,designation FROM employees WHERE manager_id=?', e.id) };
 });
 
@@ -737,10 +738,79 @@ route('POST', '/api/assets/:id/assign', ({ user, params, body }) => {
 });
 route('DELETE', '/api/assets/:id', ({ user, params }) => { need(can(user, 'assets')); run('DELETE FROM assets WHERE id=?', params.id); return { ok: true }; });
 
-// announcements
-route('POST', '/api/announcements', ({ user, body }) => { need(can(user, 'announcements')); req_(body, 'title', 'body'); run('INSERT INTO announcements(title,body,author_id,created) VALUES(?,?,?,?)', body.title, body.body, user.id, todayStr()); return { ok: true }; });
-route('DELETE', '/api/announcements/:id', ({ user, params }) => { need(can(user, 'announcements')); run('DELETE FROM announcements WHERE id=?', params.id); return { ok: true }; });
-route('GET', '/api/announcements', () => all('SELECT a.*, e.name author FROM announcements a LEFT JOIN employees e ON e.id=a.author_id ORDER BY a.id DESC'));
+// announcements: audience (everyone or chosen people), an attachment to download, and optional "send a file back" / "write a reply" requests
+const ANN_MIMES = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'application/msword': 'ole', 'application/vnd.ms-excel': 'ole', 'text/plain': 'txt',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'zip', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'zip' };
+const MAX_ANN_BYTES = 3e6;
+function saveAnnFile(annId, kind, empId, f) {
+  if (!f || typeof f !== 'object') bad('Attach a file');
+  const mime = String(f.mime || ''), type = ANN_MIMES[mime]; if (!type) bad('Attach a PDF, image (JPG / PNG), Word, Excel or text file');
+  const buf = Buffer.from(String(f.data || ''), 'base64'); if (!buf.length) bad('The file is empty'); if (buf.length > MAX_ANN_BYTES) bad('The file is too large (max 3 MB)');
+  const okMagic = type === 'pdf' ? buf.subarray(0, 5).toString() === '%PDF-' : type === 'jpg' ? (buf[0] === 0xFF && buf[1] === 0xD8) : type === 'png' ? buf.subarray(1, 4).toString() === 'PNG' : type === 'zip' ? (buf[0] === 0x50 && buf[1] === 0x4B) : type === 'ole' ? (buf[0] === 0xD0 && buf[1] === 0xCF) : true;
+  if (!okMagic) bad('The file content does not match its type');
+  const filename = String(f.filename || 'file').replace(/[\\/:*?"<>|\r\n]+/g, '_').slice(0, 120);
+  return run('INSERT INTO announcement_files(ann_id,kind,emp_id,filename,mime,size,data,uploaded) VALUES(?,?,?,?,?,?,?,?)', annId, kind, empId, filename, mime, buf.length, buf.toString('base64'), todayStr()).lastInsertRowid;
+}
+const annTargetIds = a => { if (a.audience !== 'selected') return null; try { return JSON.parse(a.target_ids || '[]'); } catch { return []; } };
+const annForUser = (a, uid) => { const t = annTargetIds(a); return !t || t.includes(uid); };
+const annNeedsReply = a => !!(a.ask_file || a.ask_reply);
+const annRecipients = a => { const t = annTargetIds(a); return all("SELECT id,name,emp_code FROM employees WHERE role!='admin' AND status!='exited' ORDER BY emp_code").filter(e => !t || t.includes(e.id)); };
+function annView(user, rows) {
+  const staff = can(user, 'announcements'), atts = new Map(all("SELECT id, ann_id, filename, size FROM announcement_files WHERE kind='attachment'").map(f => [f.ann_id, f]));
+  const mine = new Set(all('SELECT ann_id FROM announcement_replies WHERE emp_id=?', user.id).map(r => r.ann_id)), counts = new Map(all('SELECT ann_id, COUNT(*) c FROM announcement_replies GROUP BY ann_id').map(r => [r.ann_id, r.c]));
+  return rows.filter(a => staff || annForUser(a, user.id)).map(a => {
+    const f = atts.get(a.id), t = annTargetIds(a), o = { id: a.id, title: a.title, body: a.body, author: a.author, created: a.created, audience: a.audience || 'all', ask_file: !!a.ask_file, ask_reply: !!a.ask_reply,
+      attachment: f ? { file_id: f.id, filename: f.filename, size: f.size } : null, replied: mine.has(a.id), reply_needed: annNeedsReply(a) && !mine.has(a.id) && user.role !== 'admin' };
+    if (staff) { o.target_count = t ? t.length : annRecipients(a).length; o.reply_count = counts.get(a.id) || 0; o.target_ids = t; }
+    return o;
+  });
+}
+route('POST', '/api/announcements', ({ user, body }) => {
+  need(can(user, 'announcements')); req_(body, 'title', 'body');
+  const selected = body.audience === 'selected', ids = selected ? [...new Set((Array.isArray(body.emp_ids) ? body.emp_ids : []).map(Number).filter(Number.isInteger))] : [];
+  if (selected) { const ok = new Set(all("SELECT id FROM employees WHERE role!='admin' AND status!='exited'").map(e => e.id)); if (!ids.length || ids.some(i => !ok.has(i))) bad('Choose at least one employee'); }
+  const askFile = body.ask_file === true || body.ask_file === 'true' || body.ask_file === 1, askReply = body.ask_reply === true || body.ask_reply === 'true' || body.ask_reply === 1;
+  const id = tx(() => {
+    const r = run('INSERT INTO announcements(title,body,author_id,created,audience,target_ids,ask_file,ask_reply) VALUES(?,?,?,?,?,?,?,?)', String(body.title).trim().slice(0, 200), String(body.body).slice(0, 5000), user.id, todayStr(), selected ? 'selected' : 'all', selected ? JSON.stringify(ids) : null, askFile ? 1 : 0, askReply ? 1 : 0);
+    if (body.attachment) run('UPDATE announcements SET att_file_id=? WHERE id=?', saveAnnFile(r.lastInsertRowid, 'attachment', user.id, body.attachment), r.lastInsertRowid);
+    return r.lastInsertRowid;
+  });
+  return { ok: true, id };
+});
+route('DELETE', '/api/announcements/:id', ({ user, params }) => { need(can(user, 'announcements')); tx(() => { run('DELETE FROM announcement_files WHERE ann_id=?', params.id); run('DELETE FROM announcement_replies WHERE ann_id=?', params.id); run('DELETE FROM announcements WHERE id=?', params.id); }); return { ok: true }; });
+const ANN_SQL = 'SELECT a.*, e.name author FROM announcements a LEFT JOIN employees e ON e.id=a.author_id';
+route('GET', '/api/announcements', ({ user }) => annView(user, all(ANN_SQL + ' ORDER BY a.id DESC')));
+// what this employee still has to answer (the pop-up keeps coming back until they submit)
+route('GET', '/api/announcements/pending', ({ user }) => user.role === 'admin' ? [] : annView(user, all(ANN_SQL + ' ORDER BY a.id')).filter(a => a.reply_needed));
+route('POST', '/api/announcements/:id/reply', ({ user, params, body }) => {
+  need(user.role !== 'admin', 'The admin does not reply to announcements');
+  const a = get(ANN_SQL + ' WHERE a.id=?', params.id); if (!a || !annForUser(a, user.id)) bad('Not found', 404);
+  if (!annNeedsReply(a)) bad('This announcement does not need a reply');
+  if (get('SELECT id FROM announcement_replies WHERE ann_id=? AND emp_id=?', a.id, user.id)) bad('You have already replied to this announcement');
+  const text = String(body.text || '').trim().slice(0, 2000);
+  if (a.ask_reply && !text) bad('Please write your reply');
+  if (a.ask_file && !body.file) bad('Please attach the file or image that was asked for');
+  tx(() => { const fid = body.file ? saveAnnFile(a.id, 'reply', user.id, body.file) : null; run('INSERT INTO announcement_replies(ann_id,emp_id,text,file_id,created) VALUES(?,?,?,?,?)', a.id, user.id, text || null, fid, new Date().toISOString()); });
+  return { ok: true };
+});
+route('GET', '/api/announcement-files/:id', ({ user, params }) => {
+  const f = get('SELECT * FROM announcement_files WHERE id=?', params.id); if (!f) bad('Not found', 404);
+  const a = get('SELECT * FROM announcements WHERE id=?', f.ann_id), staff = can(user, 'announcements') || can(user, 'employees');
+  if (f.kind === 'attachment') need(staff || (a && annForUser(a, user.id))); else need(staff || f.emp_id === user.id);
+  return { __raw: { type: f.mime, buf: Buffer.from(f.data, 'base64'), cache: 'private, no-store', filename: f.filename } };
+});
+const replyRow = r => ({ ann_id: r.ann_id, title: r.title, emp_id: r.emp_id, name: r.name, emp_code: r.emp_code, text: r.text, created: r.created, file: r.file_id ? { file_id: r.file_id, filename: r.filename, size: r.size } : null });
+const REPLY_SQL = 'SELECT r.*, a.title, e.name, e.emp_code, f.filename, f.size FROM announcement_replies r JOIN announcements a ON a.id=r.ann_id JOIN employees e ON e.id=r.emp_id LEFT JOIN announcement_files f ON f.id=r.file_id';
+route('GET', '/api/announcements/:id/replies', ({ user, params }) => {
+  need(can(user, 'announcements') || can(user, 'employees'));
+  const a = get(ANN_SQL + ' WHERE a.id=?', params.id); if (!a) bad('Not found', 404);
+  const done = new Map(all(REPLY_SQL + ' WHERE r.ann_id=?', a.id).map(r => [r.emp_id, replyRow(r)]));
+  return { announcement: { id: a.id, title: a.title, ask_file: !!a.ask_file, ask_reply: !!a.ask_reply }, people: annRecipients(a).map(e => ({ emp_id: e.id, name: e.name, emp_code: e.emp_code, reply: done.get(e.id) || null })) };
+});
+route('GET', '/api/employees/:id/replies', ({ user, params }) => {
+  need(can(user, 'announcements') || can(user, 'employees'));
+  return all(REPLY_SQL + ' WHERE r.emp_id=? ORDER BY r.id DESC', +params.id).map(replyRow);
+});
 
 // learning
 route('GET', '/api/courses', ({ user }) => all(`SELECT c.*, (SELECT progress FROM enrollments WHERE emp_id=? AND course_id=c.id) progress,
