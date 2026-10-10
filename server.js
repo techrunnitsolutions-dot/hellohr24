@@ -405,7 +405,7 @@ function checkPunchLocation(user, body, mode) {
 }
 route('POST', '/api/attendance/checkin', ({ user, body }) => {
   const d = todayStr();
-  if (!isWorkday(d, holidaySet())) bad('Today is a weekend/holiday');
+  // weekends and holidays are not working days, but people may still punch in (extra work is recorded; nothing is deducted for off days)
   if (get('SELECT id FROM punches WHERE emp_id=? AND date=? AND out_time IS NULL', user.id, d)) bad('You are already punched in');
   const t = nowSec(), mode = body.mode === 'wfh' ? 'wfh' : 'office', g = checkPunchLocation(user, body, mode);
   tx(() => {

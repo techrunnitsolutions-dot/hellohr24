@@ -70,10 +70,10 @@ function punchCard(d) {
   if (!p.first_in) state = '<span class="badge">Not punched in yet</span>';
   else if (p.open) state = `<span class="badge wfh">Working now</span>${p.late ? ' <span class="badge pending">late</span>' : ''}`;
   else state = `<span class="badge ${p.status === 'half' ? 'half' : p.status === 'absent' ? 'rejected' : 'present'}">${DAY_LABEL[p.status] || p.status}</span>`;
-  const note = !p.first_in ? (p.workday ? 'Punch in to start counting your working hours.' : 'Today is a weekend / holiday.')
+  const note = !p.first_in ? (p.workday ? 'Punch in to start counting your working hours.' : 'Today is a weekend / holiday. You can still punch in if you are working; it is recorded as extra work.')
     : p.open ? (p.projected ? `If you punch out now: <b>${DAY_LABEL[p.projected.status] || p.projected.status}</b>${p.projected.reason ? ' — ' + esc(p.projected.reason) : ''}` : '')
       : `${esc(p.reason || '')}`;
-  const button = p.open ? '<button class="btn danger punch" data-act="punch">⏹ Punch out</button>' : `<button class="btn ok punch" data-act="punch" ${p.workday ? '' : 'disabled'}>▶ Punch in</button>`;
+  const button = p.open ? '<button class="btn danger punch" data-act="punch">⏹ Punch out</button>' : `<button class="btn ok punch" data-act="punch">▶ Punch in</button>`;
   return `<div class="card punchcard personal"><div class="punchrow">
       <div><div class="muted">Today · ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' })}</div><div id="punchTimer" class="timer">${hms(p.worked_secs)}</div><div>${state}</div></div>
       <div class="punchbtn">${button}${p.open ? '' : `<select id="punchMode" title="Where are you working from?">${opts([['office', '🏢 Office'], ['wfh', '🏠 Work from home']], p.default_mode)}</select>`}</div></div>
