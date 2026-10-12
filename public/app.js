@@ -338,7 +338,7 @@ function policiesCard(p) {
   return `<div class="card"><div style="display:flex;align-items:center"><h2 class="grow">📋 Office policies</h2>${can('settings') ? '<a href="#/settings">Edit attendance rules</a>' : ''}</div>
     <div class="grid g2" style="gap:24px">
       <div><h3>🕒 Attendance (automatic)</h3><ul class="policy">
-        ${li(`Office hours: <b>${c.office_start} – ${c.office_end}</b> (${c.office_hours} hours); Saturday, Sunday and company holidays are off`)}
+        ${li(`Office hours: <b>${c.office_start} – ${c.office_end}</b> (${c.office_hours} hours); ${weekendText(c.weekend)} and company holidays are off`)}
         ${li('Working hours are counted from <b>Punch In</b> to <b>Punch Out</b>. You can punch in and out several times; the time adds up')}
         ${li(`Under <b>${c.half_day_hours} hours</b> → <b>not counted as a day</b> (only those hours are paid). <b>${c.half_day_hours} hours</b> or more → <b>Half day</b>. <b>${c.full_day_hours} hours</b> or more → <b>Full day</b>`)}
         ${li(`The full office day is ${c.office_hours} hours. A day of ${c.full_day_hours}–${c.office_hours} hours still counts as a Full day, but only <b>${c.allowance_days} times a month</b>. From the next time it counts as a <b>Half day</b>`)}
@@ -361,6 +361,9 @@ function policiesCard(p) {
 }
 // consecutive days with the same name are one holiday
 const holidayGroups = list => { const out = []; for (const h of list) { const g = out[out.length - 1]; if (g && g.name === h.name && Math.round((new Date(h.date) - new Date(g.to)) / 864e5) === 1) { g.to = h.date; g.days++; } else out.push({ name: h.name, from: h.date, to: h.date, days: 1 }); } return out; };
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const weekendOf = () => (S.lk && S.lk.weekend) || [0, 6];
+const weekendText = w => !w || !w.length ? 'no weekly off day' : (w.length === 1 ? DAY_NAMES[w[0]] : w.slice(0, -1).map(d => DAY_NAMES[d]).join(', ') + ' and ' + DAY_NAMES[w[w.length - 1]]);
 PAGES.dashboard = async () => {
   const [d, attHtml] = await Promise.all([api('GET', '/api/dashboard'), isAdmin() ? '' : PAGES.attendance().catch(e => `<div class="card"><p class="err">${esc(e.message)}</p></div>`)]);
   const u = S.user, t = d.today;
@@ -372,7 +375,7 @@ PAGES.dashboard = async () => {
   const hr = new Date().getHours(), greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
   const att = !t ? `<p class="muted">You haven't checked in today.</p><button class="btn primary" data-act="checkin" data-id="office">Check in (Office)</button> <button class="btn" data-act="checkin" data-id="wfh">Check in (WFH)</button>`
     : `<p>Checked in at <b>${t.check_in}</b> ${badge(t.status)}${t.late ? ' <span class="badge pending">late</span>' : ''}${t.reason ? ` <small class="muted">${esc(t.reason)}</small>` : ''}${t.check_out ? ` · out at <b>${t.check_out}</b>` : ''}</p>${t.check_out ? '<p class="muted">Have a great evening!</p>' : '<button class="btn danger" data-act="checkout">Check out</button>'}`;
-  return `${head(`${greet}, ${u.name.split(' ')[0]} 👋`, new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }), isAdmin() ? '' : '<button class="btn" data-act="regRequest">✏️ Attendance correction request</button>')}
+  return `${head(`${greet}, ${u.name.split(' ')[0]} 👋`, new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }), isAdmin() ? (can('settings') ? '<button class="btn" data-act="weekendDays">📅 Weekly off days</button>' : '') : '<button class="btn" data-act="regRequest">✏️ Attendance correction request</button>')}
   ${punchCard(d)}
   ${isAdmin() ? '' : profileBanner(d)}
   ${isAdmin() ? '' : `<div class="embed">${attHtml}</div>${policiesCard(d.policies)}`}
@@ -472,9 +475,9 @@ async function attendanceEditor(e) {
   const cnt = { office: 0, wfh: 0, half: 0, absent: 0, leave: 0 }; Object.values(a.days).forEach(d => { if (cnt[d.status] !== undefined) cnt[d.status]++; });
   let cells = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<div class="dh">${x}</div>`).join('') + '<div></div>'.repeat(firstDow);
   for (let d = 1; d <= nd; d++) {
-    const ds = `${month}-${String(d).padStart(2, '0')}`, dow = new Date(y, m - 1, d).getDay(), dv = a.days[ds], r = byDate[ds], st = dv && DAY_TXT[dv.status] ? dv.status : null;
+    const ds = `${month}-${String(d).padStart(2, '0')}`, dow = new Date(y, m - 1, d).getDay(), dv = a.days[ds], r = byDate[ds], isOff = weekendOf().includes(dow), st = dv && DAY_TXT[dv.status] ? dv.status : null;
     const manual = (r && r.manual) || (dv && dv.reason === 'Set by admin');
-    cells += `<button type="button" class="day editable ${dow === 0 || dow === 6 ? 'off' : ''} ${hol[ds] ? 'hol' : ''}" data-act="editDay" data-date="${ds}" title="Click to change this day"><b>${d}</b> ${st && DAY_TXT[st][0] !== '—' && DAY_TXT[st][0] !== 'Off' ? `<span class="badge ${DAY_TXT[st][1]}">${DAY_TXT[st][0]}${dv.leave_type ? ' · ' + esc(dv.leave_type.replace(/ \(.*/, '')) : ''}</span>` : ''}${manual ? ' <span title="Set by admin">✎</span>' : ''}${hol[ds] ? `<br><small class="muted">${esc(hol[ds])}</small>` : ''}${r && r.check_in ? `<br><small>${r.check_in}–${r.check_out || ''}${r.hours ? ' · ' + r.hours + 'h' : ''}</small>` : ''}</button>`;
+    cells += `<button type="button" class="day editable ${isOff ? 'off' : ''} ${hol[ds] ? 'hol' : ''}" data-act="editDay" data-date="${ds}" title="Click to change this day"><b>${d}</b> ${st && DAY_TXT[st][0] !== '—' && DAY_TXT[st][0] !== 'Off' ? `<span class="badge ${DAY_TXT[st][1]}">${DAY_TXT[st][0]}${dv.leave_type ? ' · ' + esc(dv.leave_type.replace(/ \(.*/, '')) : ''}</span>` : ''}${manual ? ' <span title="Set by admin">✎</span>' : ''}${hol[ds] ? `<br><small class="muted">${esc(hol[ds])}</small>` : ''}${r && r.check_in ? `<br><small>${r.check_in}–${r.check_out || ''}${r.hours ? ' · ' + r.hours + 'h' : ''}</small>` : ''}</button>`;
   }
   const chip = (n, l, c) => `<span class="badge ${c}" style="margin-right:6px">${n} ${l}</span>`;
   return `<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h2 class="grow" style="margin:0">🗓️ Attendance — edit any day</h2><input type="month" id="empAttMonth" value="${month}" style="width:auto"></div>
@@ -509,7 +512,7 @@ PAGES.attendance = async () => {
     let cells = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<div class="dh">${x}</div>`).join('') + '<div></div>'.repeat(firstDow);
     for (let d = 1; d <= days; d++) {
       const ds = `${month}-${String(d).padStart(2, '0')}`, dow = new Date(y, m - 1, d).getDay(), r = byDate[ds], lv = a.leaves.find(l => l.from_date <= ds && l.to_date >= ds);
-      const off = dow === 0 || dow === 6;
+      const off = weekendOf().includes(dow);
       cells += `<div class="day ${off ? 'off' : ''} ${hol[ds] ? 'hol' : ''}"><b>${d}</b> ${hol[ds] ? `<span class="badge" style="background:#ffedd5;color:#9a3412">🎉 ${esc(hol[ds])}</span>${r ? ' ' : ''}` : ''}${r ? badge(r.status) : hol[ds] ? '' : lv ? `<span class="badge approved">${esc(lv.name)}</span>` : a.days?.[ds]?.status === 'absent' ? '<span class="badge rejected">absent</span>' : ''}${r ? `<br><small>${r.check_in || ''}–${r.check_out || ''}${r.hours ? ' · ' + r.hours + 'h' : ''}</small>` : ''}${r && (r.reason || r.late) ? `<br><small class="muted">${r.late ? 'late' : esc(r.reason)}</small>` : ''}</div>`;
     }
     const cnt = s => a.rows.filter(r => r.status === s).length;
@@ -848,7 +851,7 @@ PAGES.settings = async () => {
     ${table([{ h: 'Name', f: d => esc(d.name) }, { h: '', f: d => `<button class="btn sm" data-act="delDept" data-id="${d.id}">Delete</button>` }], lk.departments)}</div>
     <div class="card"><div style="display:flex"><h2 class="grow">Leave policy</h2><button class="btn sm primary" data-act="addLT">+ Add type</button></div>
     ${table([{ h: 'Type', f: t => esc(t.name) }, { h: 'Days / year', f: t => t.days_per_year || 'Unlimited' }, { h: 'Paid', f: t => t.is_paid ? 'Yes' : 'No' }, { h: '', f: t => t.is_paid ? `<button class="btn sm" data-act="editLT" data-id="${t.id}" data-v="${t.days_per_year}">Edit</button>` : '' }], lk.leaveTypes)}</div></div>
-    <div class="card"><div style="display:flex"><h2 class="grow">Attendance rules</h2><button class="btn sm primary" data-act="editAttRules">Edit</button></div><dl class="kv"><dt>Office hours</dt><dd>${cfg.office_start} – ${cfg.office_end} <small class="muted">(${cfg.office_hours} hours)</small></dd><dt>Absent if no punch-in by</dt><dd>${cfg.grace_end}</dd><dt>Half day / Full day</dt><dd>${cfg.half_day_hours}h = half day · ${cfg.full_day_hours}h = full day <small class="muted">(under ${cfg.half_day_hours}h: paid by the hour only)</small></dd><dt>Late relaxation</dt><dd>${cfg.grace_minutes} min, ${cfg.allowance_days} days a month <small class="muted">(then half day)</small></dd><dt>Short days (${cfg.full_day_hours}–${cfg.office_hours}h)</dt><dd>${cfg.allowance_days} a month count as full <small class="muted">(then half day)</small></dd><dt>Salary day</dt><dd>${cfg.salary_day}${ordSuffix(cfg.salary_day)} of every month</dd><dt>Overtime (over ${cfg.office_hours}h)</dt><dd>hourly rate + ${cfg.ot_premium}% extra</dd></dl></div>
+    <div class="card"><div style="display:flex"><h2 class="grow">Attendance rules</h2><button class="btn sm primary" data-act="editAttRules">Edit</button></div><dl class="kv"><dt>Weekly off days</dt><dd>${weekendText(cfg.weekend)} <button class="btn sm" data-act="weekendDays">Change</button></dd><dt>Office hours</dt><dd>${cfg.office_start} – ${cfg.office_end} <small class="muted">(${cfg.office_hours} hours)</small></dd><dt>Absent if no punch-in by</dt><dd>${cfg.grace_end}</dd><dt>Half day / Full day</dt><dd>${cfg.half_day_hours}h = half day · ${cfg.full_day_hours}h = full day <small class="muted">(under ${cfg.half_day_hours}h: paid by the hour only)</small></dd><dt>Late relaxation</dt><dd>${cfg.grace_minutes} min, ${cfg.allowance_days} days a month <small class="muted">(then half day)</small></dd><dt>Short days (${cfg.full_day_hours}–${cfg.office_hours}h)</dt><dd>${cfg.allowance_days} a month count as full <small class="muted">(then half day)</small></dd><dt>Salary day</dt><dd>${cfg.salary_day}${ordSuffix(cfg.salary_day)} of every month</dd><dt>Overtime (over ${cfg.office_hours}h)</dt><dd>hourly rate + ${cfg.ot_premium}% extra</dd></dl></div>
     <div class="card"><div style="display:flex"><h2 class="grow">Holidays</h2><button class="btn sm primary" data-act="addHol">+ Add holiday</button></div>
     ${table([{ h: 'Date', f: h => fd(h.date) }, { h: 'Holiday', f: h => esc(h.name) }, { h: '', f: h => `<button class="btn sm" data-act="delHol" data-id="${h.id}">Delete</button>` }], hols)}</div>`;
 };
@@ -1048,6 +1051,9 @@ const A = {
     { name: 'date', label: 'Date', type: 'date', required: true, value: today() }, { name: 'place', label: 'Place / client / site', required: true }, { name: 'start_time', label: 'Start time', type: 'time', required: true }, { name: 'end_time', label: 'End time', type: 'time', required: true }, { name: 'reason', label: 'Reason / purpose', type: 'textarea', required: true }],
     onSubmit: async v => { await api('POST', '/api/requests', { type: 'visit', ...v }); toast('Request sent for approval'); } }), 60); },
   togGeo: async (id, el) => { const on = el.dataset.on !== '1'; const r = await api('POST', `/api/employees/${id}/geofence`, { punch_anywhere: on }); toast(on ? 'ON: this employee can now punch in / out from anywhere' : 'OFF: this employee must be at the office to punch' + (r.office_set ? '' : ' (no office location is set yet, so nobody is checked)'), !on && !r.office_set); route(); },
+  weekendDays: () => openForm({ title: 'Weekly off days', submit: 'Save', intro: 'Tick the days your company is closed every week. These are not working days: nobody is marked absent and no salary is cut for them, and leave is not counted on them. The setting applies to the whole calendar, past and future, but payslips already finalized do not change.',
+    fields: [{ name: 'days', label: 'Weekly off', type: 'checks', value: weekendOf().map(String), options: [1, 2, 3, 4, 5, 6, 0].map(d => [String(d), DAY_NAMES[d], ''])}],
+    onSubmit: async v => { if (v.days.length >= 7) throw new Error('At least one day must be a working day'); await api('PUT', '/api/settings/weekend', { days: v.days.map(Number) }); S.lk = await api('GET', '/api/lookups'); toast('Weekly off: ' + weekendText(weekendOf())); } }),
   cancelLeave: id => confirmBox('Cancel this leave request?', () => api('POST', `/api/leaves/${id}/cancel`)),
   decideLeave: (id, el) => openForm({ title: el.dataset.v === 'approved' ? 'Approve leave' : 'Reject leave', fields: [{ name: 'note', label: 'Note (optional)', type: 'textarea' }], submit: 'Confirm', onSubmit: v => api('POST', `/api/leaves/${id}/decide`, { status: el.dataset.v, note: v.note }) }),
   runPayroll: () => openForm({ title: 'Run payroll', intro: 'Creates (or recalculates) a draft for the month using attendance and approved leave. Review it, then finalize to publish payslips.', fields: [{ name: 'month', label: 'Month', type: 'month', value: S.payMonth || ym(new Date()), required: true }], submit: 'Calculate', onSubmit: async v => { const r = await api('POST', '/api/payroll/runs', v); setTimeout(() => A.viewRun(r.id), 100); } }),

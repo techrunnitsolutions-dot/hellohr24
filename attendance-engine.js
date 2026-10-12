@@ -14,6 +14,13 @@ const toSec = t => { const p = String(t).split(':').map(Number); return p[0] * 3
 const fmtMin = n => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0');
 const fmtHM = m => `${Math.floor(m / 60)}h ${String(Math.round(m % 60)).padStart(2, '0')}m`;
 
+// weekly off days as day numbers (0 = Sunday ... 6 = Saturday); stored as "0,6", "none" for a seven-day week, missing = Saturday + Sunday
+function parseWeekend(v) {
+  if (v === undefined || v === null || v === '') return [0, 6];
+  if (v === 'none') return [];
+  const d = [...new Set(String(v).split(',').map(x => Number(x.trim())).filter(x => Number.isInteger(x) && x >= 0 && x <= 6))].sort((a, b) => a - b);
+  return d.length && d.length < 7 ? d : [0, 6];
+}
 function normCfg(r = {}) {
   const num = (v, d) => (v !== undefined && v !== null && v !== '' && !isNaN(+v)) ? +v : d;
   const c = {
@@ -21,6 +28,7 @@ function normCfg(r = {}) {
     grace_minutes: num(r.grace_minutes, 30), half_day_hours: num(r.half_day_hours, 4), full_day_hours: num(r.full_day_hours, 8), allowance_days: num(r.allowance_days, 3),
     salary_day: Math.min(28, Math.max(1, Math.round(num(r.salary_day, 7)))), ot_premium: num(r.ot_premium_percent, 75),   // payroll rules that live next to the attendance rules
   };
+  c.weekend = parseWeekend(r.weekend_days);
   c.grace_end = fmtMin(toMin(c.office_start) + c.grace_minutes);
   c.office_hours = (toMin(c.office_end) - toMin(c.office_start)) / 60;
   return c;
@@ -90,4 +98,4 @@ function projectNow(rec, sessions, date, cfg, ctxBefore, nowS, todayS) {
   return derive({ ...rec, check_out: nowS.slice(0, 5) }, date, cfg, ctxBefore, closed, nowS, todayS);
 }
 
-module.exports = { toMin, toSec, fmtMin, fmtHM, normCfg, isOpen, workedSecs, derive, monthWalk, projectNow };
+module.exports = { parseWeekend, toMin, toSec, fmtMin, fmtHM, normCfg, isOpen, workedSecs, derive, monthWalk, projectNow };

@@ -13,7 +13,7 @@ const workday = s => ![0, 6].includes(new Date(s + 'T00:00:00Z').getUTCDay());
   const mgr = (await api('POST', '/api/login', null, { portal: 'employee', identifier: 'DYE003', password: 'welcome123' })).body.token;
   const eid = emp.user.id, lk = (await api('GET', '/api/lookups', at)).body, cl = lk.leaveTypes.find(t => /Casual/.test(t.name)), lop = lk.leaveTypes.find(t => /Loss/.test(t.name)), wfhT = lk.leaveTypes.find(t => t.kind === 'wfh');
   const today = ymd(new Date()); let d1 = addD(today, -12); while (!workday(d1)) d1 = addD(d1, -1);
-  const month = d1.slice(0, 7), cal = async () => (await api('GET', `/api/attendance?month=${month}&emp_id=${eid}`, at)).body, day = async d => (await cal()).days[d];
+  const month = d1.slice(0, 7), cal = async () => (await api('GET', `/api/attendance?month=${month}&emp_id=${eid}`, at)).body, day = async d => (await api('GET', `/api/attendance?month=${d.slice(0, 7)}&emp_id=${eid}`, at)).body.days[d];   // the date may fall in the next month
   const edit = (d, status, extra = {}) => api('POST', '/api/attendance/edit', at, { emp_id: eid, date: d, status, ...extra });
 
   const start = await day(d1); ok('seeded day has an automatic status', !!start && start.status && start.reason !== 'Set by admin', JSON.stringify(start));

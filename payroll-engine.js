@@ -64,7 +64,7 @@ function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0
   let working = 0, lop = 0, partialMin = 0, otMin = 0;
   for (let d = first; d <= last; d = addDays(d, 1)) {
     const w = new Date(d + 'T00:00:00Z').getUTCDay();
-    if (w === 0 || w === 6 || hols.has(d)) continue;
+    if ((cfg.weekend || [0, 6]).includes(w) || hols.has(d)) continue;
     working++;
     if (d < emp.join_date) { lop++; continue; }
     if (emp.exit_date && d > emp.exit_date) { lop++; continue; }

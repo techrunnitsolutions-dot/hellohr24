@@ -67,7 +67,14 @@ const isStaff = u => u.role === 'admin' || (u.perms || []).some(p => p !== 'team
 const need = (cond, msg = 'Forbidden') => { if (!cond) bad(msg, 403); };
 const req_ = (b, ...f) => f.forEach(k => { if (b[k] === undefined || b[k] === null || b[k] === '') bad(`${k} is required`); });
 const holidaySet = () => new Set(all('SELECT date FROM holidays').map(h => h.date));
-const isWorkday = (ds, hols) => { const w = utc(ds).getUTCDay(); return w !== 0 && w !== 6 && !hols.has(ds); };
+// the company's weekly off days (a few seconds of cache: this is asked for once per calendar day in loops)
+const weekendCache = new Map();
+function weekendDays() {
+  const key = ctx().company ? ctx().company.id : 'none', hit = weekendCache.get(key), now = Date.now();
+  if (hit && now - hit.t < 3000) return hit.v;
+  const v = AE.parseWeekend((get("SELECT value FROM settings WHERE key='weekend_days'") || {}).value); weekendCache.set(key, { v, t: now }); return v;
+}
+const isWorkday = (ds, hols) => !weekendDays().includes(utc(ds).getUTCDay()) && !hols.has(ds);
 const workdaysBetween = (from, to) => {
   const hols = holidaySet(); let n = 0;
   for (let d = from; d <= to; d = addDays(d, 1)) if (isWorkday(d, hols)) n++;
@@ -168,6 +175,7 @@ route('GET', '/api/lookups', ({ user }) => {
   return {
     departments: all('SELECT * FROM departments ORDER BY name'),
     leaveTypes: all('SELECT * FROM leave_types ORDER BY id'),
+    weekend: weekendDays(),
     employees: all("SELECT id,emp_code,name,role,designation FROM employees WHERE status!='exited' ORDER BY name").filter(e => staff || e.id === user.id || team.has(e.id)),
   };
 });
@@ -496,6 +504,16 @@ route('PUT', '/api/settings/attendance', ({ user, body }) => {
   for (const [k, v] of Object.entries({ office_start: body.office_start, office_end: body.office_end, grace_minutes: g, half_day_hours: hh, full_day_hours: fh, allowance_days: al, ...(sd !== undefined ? { salary_day: sd } : {}), ...(op !== undefined ? { ot_premium_percent: op } : {}) }))
     run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
   return attCfg();
+});
+// weekly off days: a company picks which days of the week are off (Sat+Sun, only Sunday, Fri+Sat ...)
+route('PUT', '/api/settings/weekend', ({ user, body }) => {
+  need(can(user, 'settings'));
+  const days = [...new Set((Array.isArray(body.days) ? body.days : []).map(Number))].sort((a, b) => a - b);
+  if (days.some(d => !Number.isInteger(d) || d < 0 || d > 6)) bad('Choose days of the week');
+  if (days.length >= 7) bad('At least one day of the week must be a working day');
+  run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'weekend_days', days.length ? days.join(',') : 'none');
+  weekendCache.clear();
+  return { weekend: weekendDays() };
 });
 // holidays & leave types
 route('GET', '/api/holidays', () => all('SELECT * FROM holidays ORDER BY date'));

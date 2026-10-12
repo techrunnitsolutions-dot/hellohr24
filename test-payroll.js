@@ -56,4 +56,11 @@ eq('zero / negative in-hand', [P.ctcFromInhand(0), P.ctcFromInhand(-5)], [0, 0])
 { const a = P.resolveSalary('ctc', 1200000), b = P.resolveSalary('inhand', a.inhand_annual); eq('resolve ctc keeps the CTC', a.ctc, 1200000); eq('resolve in-hand of that CTC returns (about) the same CTC', Math.abs(b.ctc - 1200000) <= 2, true); }
 eq('bad basis refused', (() => { try { P.resolveSalary('hourly', 1); } catch (e) { return e.message; } })(), 'Choose annual CTC or annual in-hand');
 eq('bad amount refused', (() => { try { P.resolveSalary('ctc', -1); } catch (e) { return e.message; } })(), 'Enter a valid annual amount');
+// weekly off days other than Saturday + Sunday
+{ const cfgFS = E.normCfg({ weekend_days: '5,6' }), cfgSun = E.normCfg({ weekend_days: '0' }), cfgNone = E.normCfg({ weekend_days: 'none' });
+  eq('weekend parsing', [E.parseWeekend(undefined), E.parseWeekend('0,6'), E.parseWeekend('6, 5'), E.parseWeekend('none'), E.parseWeekend('0,1,2,3,4,5,6'), E.parseWeekend('x')], [[0, 6], [0, 6], [5, 6], [], [0, 6], [0, 6]]);
+  const count = w => { let n = 0; for (let d = 1; d <= 30; d++) if (!w.includes(new Date(`2026-09-${String(d).padStart(2, '0')}T00:00:00Z`).getUTCDay())) n++; return n; };
+  const sl = c => P.buildSlip({ emp, month: MONTH, today: TODAY, cfg: c, hols: HOLS, dayOf: () => ({ status: 'office', minutes: 540 }) });
+  eq('Fri+Sat off: working days follow the company', sl(cfgFS).working_days, count([5, 6])); eq('only Sunday off', sl(cfgSun).working_days, count([0])); eq('seven-day week', sl(cfgNone).working_days, 30);
+  eq('a full month still pays the full salary whatever the weekend', [sl(cfgFS).gross, sl(cfgSun).gross, sl(cfgNone).gross], [100000, 100000, 100000]); }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
