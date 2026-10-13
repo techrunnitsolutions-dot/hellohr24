@@ -1,5 +1,5 @@
 // HelloHR service worker: lets the app install and open instantly; data (/api) is never cached.
-const CACHE = 'hellohr-shell-v1', SHELL = ['/', '/style.css', '/app.js', '/install.js', '/icons/icon-192.png'];
+const CACHE = 'hellohr-shell-v2', SHELL = ['/', '/style.css', '/clay.css', '/app.js', '/install.js', '/icons/icon-192.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {
