@@ -814,6 +814,21 @@ async function checkAnnouncementPopup() {
   if (isMaster() || isAdmin() || S._annShown) return; S._annShown = true;
   try { const list = await api('GET', '/api/announcements/pending'); if (list.length) annPopup(list, 0); } catch (e) { /* the pop-up is a reminder; never block the app */ }
 }
+const REQ_ACTIONS = {
+  decideReq: (id, el) => { const v = el.dataset.v, r = (S._reqs || {})[id] || {}, label = REQ_LABEL[r.type] || 'request';
+    openForm({ title: (v === 'approved' ? 'Approve ' : v === 'rejected' && r.type === 'password_reset' ? 'Dismiss ' : 'Reject ') + label.replace(/^\S+\s/, ''), intro: (r.emp_name ? '<b>' + esc(r.emp_name) + '</b>: ' : '') + reqText(r) + (r.reason ? '<br><span class="muted">“' + esc(r.reason) + '”</span>' : '') + (v === 'approved' && REG_KINDS.includes(r.type) ? '<br><small>Their attendance is updated as soon as you approve.</small>' : ''),
+      submit: v === 'approved' ? 'Approve' : 'Reject', fields: [{ name: 'note', label: 'Note for the employee (optional)', type: 'textarea', full: true }],
+      onSubmit: async f => { await api('POST', `/api/requests/${id}/decide`, { status: v, note: f.note }); toast(v === 'approved' ? 'Approved ✓ The employee is updated' : 'Rejected. The employee can see it'); } }); },
+  withdrawReq: id => confirmBox('Withdraw this request?', () => api('POST', `/api/requests/${id}/withdraw`)),
+  goRequests: () => { S.tab.onboarding = 'requests'; if (location.hash === '#/onboarding') route(); else location.hash = '#/onboarding'; },
+  newRequest: () => openForm({ title: 'New request', intro: 'Your manager, HR or the admin will review it. You can see the status here.', submit: 'Send request', fields: [
+    { name: 'type', label: 'Request for', type: 'select', full: true, value: 'resignation', options: [['resignation', '🚪 Resignation'], ['transfer', '🔁 Transfer (department / location)'], ['work_type', '🏠 Change work type (office / work from home / hybrid)']] },
+    { name: 'last_working_day', label: 'Last working day', type: 'date', value: today(), showIf: 'type=resignation' },
+    { name: 'to_dept_id', label: 'New department', type: 'select', options: S.lk.departments.map(d => [d.id, d.name]), blank: '— No change —', showIf: 'type=transfer' }, { name: 'to_location', label: 'New work location', showIf: 'type=transfer' }, { name: 'transfer_date', label: 'From date', type: 'date', value: today(), showIf: 'type=transfer' },
+    { name: 'to_work_type', label: 'New work type', type: 'select', options: WORK_TYPES.map(x => [x, x]), showIf: 'type=work_type' }, { name: 'worktype_date', label: 'From date', type: 'date', value: today(), showIf: 'type=work_type' },
+    { name: 'reason', label: 'Reason', type: 'textarea', required: true, full: true }],
+    onSubmit: async v => { await api('POST', '/api/requests', v); toast('Request sent'); } }),
+};
 const ANN_ACTIONS = {
   annDownload: async (id, el) => saveBlob(await annBlob(+id), el.dataset.name || 'file'),
   annClose: () => closeModal(),
@@ -1018,7 +1033,7 @@ async function route() {
   try { $('#main').innerHTML = await fn(arg); if (isAdmin()) document.querySelectorAll('#main .personal').forEach(n => n.remove()); if (!isStaff()) document.querySelectorAll('#main .staffonly').forEach(n => n.remove()); labelTables($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="err">${esc(e.message)}</p></div>`; }
   if (page === 'profile' || page === 'maccount') $('#pwForm')?.addEventListener('submit', async e => { e.preventDefault(); const f = e.target.elements; try { await api('POST', page === 'maccount' ? '/api/master/change-password' : '/api/change-password', { current: f.current.value, next: f.next.value }); toast('Password updated'); e.target.reset(); $('#pwErr').textContent = ''; } catch (er) { $('#pwErr').textContent = er.message; } });
 }
-function logoutLocal() { S._annShown = false; document.title = 'HelloHR - HR Management Portal';  localStorage.removeItem('hh_master_token'); S.user = null; S.token = null; localStorage.removeItem('hh_token'); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); }
+function logoutLocal() { S._annShown = false; S._seenStatus = null; document.title = 'HelloHR - HR Management Portal';  localStorage.removeItem('hh_master_token'); S.user = null; S.token = null; localStorage.removeItem('hh_token'); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); }
 
 // ================= actions =================
 const A = {
@@ -1144,6 +1159,7 @@ const A = {
 Object.assign(A, MASTER_ACTIONS);
 Object.assign(A, SAL_ACTIONS);
 Object.assign(A, ANN_ACTIONS);
+Object.assign(A, REQ_ACTIONS);
 Object.assign(A, PROFILE_ACTIONS);
 Object.assign(A, DAY_EDIT_ACTIONS);
 document.addEventListener('click', e => {
@@ -1217,11 +1233,26 @@ setInterval(async () => {
   if (!S.user || S._live || document.hidden || $('#modalRoot').innerHTML) return;
   const page = location.hash.split('/')[1] || (isMaster() ? 'companies' : 'dashboard'), ae = document.activeElement;
   if (ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName) && $('#main').contains(ae)) return;
-  const live = (page === 'attendance' && S.tab.attendance !== 'report') || (page === 'employees' && S.tab.employees !== 'org') || page === 'dashboard';
+  const live = (page === 'attendance' && S.tab.attendance !== 'report') || (page === 'employees' && S.tab.employees !== 'org') || page === 'dashboard' || page === 'leave' || page === 'employee' || (page === 'onboarding' && S.tab.onboarding === 'requests') || page === 'announcements';
   if (!live) return;
   S._live = true; const y = window.scrollY;
   try { await route(); window.scrollTo(0, y); } finally { S._live = false; }
 }, 8000);
+
+// tells an employee when their leave or correction request is approved or rejected (checked every 12 s while the app is open)
+const STATUS_WORDS = { approved: ['✅', 'approved'], rejected: ['❌', 'rejected'], cancelled: ['↩️', 'cancelled'], withdrawn: ['↩️', 'withdrawn'] };
+async function pollMyDecisions() {
+  if (!S.user || isMaster() || isAdmin() || document.hidden) return;
+  try {
+    const [reqs, leaves] = await Promise.all([api('GET', '/api/requests'), api('GET', '/api/leaves')]);
+    const now = {}; reqs.forEach(r => now['r' + r.id] = [r.status, (REQ_LABEL[r.type] || 'request').replace(/^\S+\s/, ''), r.decided_by_name, r.note]); leaves.forEach(l => now['l' + l.id] = [l.status, l.type + ' leave', l.approver, l.note]);
+    const seen = S._seenStatus; S._seenStatus = Object.fromEntries(Object.entries(now).map(([k, v]) => [k, v[0]]));
+    if (!seen) return; let changed = false;
+    for (const [k, [st, name, by, note]] of Object.entries(now)) if (seen[k] === 'pending' && st !== 'pending' && STATUS_WORDS[st]) { changed = true; toast(`${STATUS_WORDS[st][0]} Your ${name} request was ${STATUS_WORDS[st][1]}${by ? ' by ' + by : ''}${note ? ': ' + note : ''}`, st === 'rejected'); }
+    if (changed && !$('#modalRoot').innerHTML && ['leave', 'dashboard', 'attendance'].includes(location.hash.split('/')[1] || 'dashboard')) route();
+  } catch (e) { /* a missed check is harmless; the next one catches up */ }
+}
+setInterval(pollMyDecisions, 12000); setTimeout(pollMyDecisions, 1500);
 
 // ---- live punch timer ----
 setInterval(() => {
