@@ -3,12 +3,14 @@ const BASE = process.env.BASE || 'http://localhost:3000', ME = process.env.MASTE
 let pass = 0, fail = 0; const ok = (n, c, x = '') => { c ? pass++ : (fail++, console.log('FAIL', n, x)); };
 const api = async (m, u, t, b) => { const r = await fetch(BASE + u, { method: m, headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: 'Bearer ' + t } : {}) }, body: b ? JSON.stringify(b) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, body: j }; };
 const ymd = d => d.toISOString().slice(0, 10), addD = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return ymd(d); };
-const workday = s => ![0, 6].includes(new Date(s + 'T00:00:00Z').getUTCDay());
+let HOL = new Set();   // the sample company has holidays (for example 2 October); they are not working days
+const workday = s => ![0, 6].includes(new Date(s + 'T00:00:00Z').getUTCDay()) && !HOL.has(s);
 (async () => {
   const code = 'dayedit' + Math.floor(Math.random() * 1e6);
   const mt = (await api('POST', '/api/login', null, { portal: 'master', identifier: ME, password: MP })).body.token;
   const co = await api('POST', '/api/master/companies', mt, { name: 'Day Edit Co', code, emp_prefix: 'DYE', admin_name: 'Ada', admin_email: code + '@t.com', admin_password: 'secret1', sample_data: true, confirm_password: MP }); ok('create company', co.status === 200);
   const at = (await api('POST', '/api/login', null, { portal: 'admin', identifier: code + '@t.com', password: 'secret1' })).body.token;
+  HOL = new Set((await api('GET', '/api/holidays', at)).body.map(h => h.date));
   const emp = (await api('POST', '/api/login', null, { portal: 'employee', identifier: 'DYE005', password: 'welcome123' })).body, et = emp.token;
   const mgr = (await api('POST', '/api/login', null, { portal: 'employee', identifier: 'DYE003', password: 'welcome123' })).body.token;
   const eid = emp.user.id, lk = (await api('GET', '/api/lookups', at)).body, cl = lk.leaveTypes.find(t => /Casual/.test(t.name)), lop = lk.leaveTypes.find(t => /Loss/.test(t.name)), wfhT = lk.leaveTypes.find(t => t.kind === 'wfh');

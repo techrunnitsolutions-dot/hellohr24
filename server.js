@@ -530,7 +530,24 @@ route('POST', '/api/holidays', ({ user, body }) => {
 });
 route('DELETE', '/api/holidays/:id', ({ user, params }) => { need(can(user, 'settings')); run('DELETE FROM holidays WHERE id=?', params.id); return { ok: true }; });
 route('POST', '/api/leave-types', ({ user, body }) => { need(can(user, 'settings')); req_(body, 'name'); try { run('INSERT INTO leave_types(name,days_per_year,is_paid) VALUES(?,?,?)', body.name, +body.days_per_year || 0, body.is_paid ? 1 : 0); } catch { bad('Leave type already exists'); } return { ok: true }; });
-route('PUT', '/api/leave-types/:id', ({ user, params, body }) => { need(can(user, 'settings')); run('UPDATE leave_types SET days_per_year=? WHERE id=?', +body.days_per_year || 0, params.id); return { ok: true }; });
+// any field of a leave type can be edited: name, days per year (0 = unlimited) and paid / unpaid
+route('PUT', '/api/leave-types/:id', ({ user, params, body }) => {
+  need(can(user, 'settings'));
+  const t = get('SELECT * FROM leave_types WHERE id=?', params.id); if (!t) bad('Not found', 404);
+  const sets = [], vals = [];
+  if (body.name !== undefined) { const n = String(body.name).trim().slice(0, 60); if (!n) bad('Enter a name'); if (get('SELECT id FROM leave_types WHERE lower(name)=lower(?) AND id!=?', n, t.id)) bad('Another leave type already has that name'); sets.push('name=?'); vals.push(n); }
+  if (body.days_per_year !== undefined && body.days_per_year !== '') { const d = Math.round(+body.days_per_year); if (!(d >= 0 && d <= 366)) bad('Days per year must be between 0 and 366 (0 = unlimited)'); sets.push('days_per_year=?'); vals.push(d); }
+  if (body.is_paid !== undefined) { if (t.kind === 'wfh') bad('Work from home is a working day, so it has no paid / unpaid setting'); sets.push('is_paid=?'); vals.push(body.is_paid === true || body.is_paid === 'true' || body.is_paid === 1 || body.is_paid === '1' ? 1 : 0); }
+  if (sets.length) run(`UPDATE leave_types SET ${sets.join(',')} WHERE id=?`, ...vals, t.id);
+  return { ok: true };
+});
+route('DELETE', '/api/leave-types/:id', ({ user, params }) => {
+  need(can(user, 'settings'));
+  const t = get('SELECT * FROM leave_types WHERE id=?', params.id); if (!t) bad('Not found', 404);
+  if (t.kind === 'wfh') bad('Work from home cannot be deleted');
+  const n = get('SELECT COUNT(*) c FROM leaves WHERE type_id=?', t.id).c; if (n) bad(`${n} leave request${n === 1 ? '' : 's'} use this type, so it cannot be deleted. Change it to unpaid or rename it instead`);
+  run('DELETE FROM leave_types WHERE id=?', t.id); return { ok: true };
+});
 
 // leaves
 route('GET', '/api/leaves/balance', ({ user, query }) => { const id = +query.emp_id || user.id; need(canSee(user, id, 'leave')); return leaveBalance(id); });
