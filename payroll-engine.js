@@ -58,13 +58,19 @@ function resolveSalary(type, amount) {
   return { type, amount: a, ctc, ...salaryBreakdown(ctc) };
 }
 
+// salary_days setting: how many days a month's salary is divided over
+//   'working'  : the month's working days (default; weekly offs and holidays are not counted at all)
+//   '30' / '31': a fixed 30 or 31 day month
+//   'calendar' : the real length of the month (28 to 31)
+// With a fixed or calendar month, weekly offs and holidays are paid days; only unpaid absence costs a day's salary.
 // dayOf(date) must return the derived attendance of that day: { status, minutes, manual, in_progress }
 function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0 }) {
   const first = month + '-01', last = lastDay(month), officeMin = Math.round(cfg.office_hours * 60), halfMin = cfg.half_day_hours * 60;
   let working = 0, lop = 0, partialMin = 0, otMin = 0;
+  const basis = cfg.salary_days || 'working', fixedDays = basis === '30' ? 30 : basis === '31' ? 31 : basis === 'calendar' ? Number(last.slice(8)) : 0;
   for (let d = first; d <= last; d = addDays(d, 1)) {
     const w = new Date(d + 'T00:00:00Z').getUTCDay();
-    if ((cfg.weekend || [0, 6]).includes(w) || hols.has(d)) continue;
+    if ((cfg.weekend || [0, 6]).includes(w) || hols.has(d)) { if (fixedDays && (d < emp.join_date || (emp.exit_date && d > emp.exit_date))) lop++; continue; }   // off days are paid, except before joining / after leaving
     working++;
     if (d < emp.join_date) { lop++; continue; }
     if (emp.exit_date && d > emp.exit_date) { lop++; continue; }
@@ -78,12 +84,13 @@ function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0
     if (final && dv.minutes > 0 && dv.minutes < halfMin) { lop += 1 - Math.min(dv.minutes, officeMin) / officeMin; partialMin += dv.minutes; continue; }   // short day: paid for the hours only
     lop++;
   }
-  const s = structure(emp.ctc), ratio = working ? (working - lop) / working : 0;
+  const days = fixedDays || working, paidDays = Math.max(0, Math.min(days, days - lop));
+  const s = structure(emp.ctc), ratio = days ? paidDays / days : 0;
   const basic = s.basic * ratio, hra = s.hra * ratio, special = s.special * ratio, gross = basic + hra + special;
   const pf = Math.min(basic, 15000) * 0.12, pt = gross > 15000 ? 200 : 0, tds = annualTax(emp.ctc) / 12 * ratio;
-  const hourly = working ? s.gross / (working * cfg.office_hours) : 0;
+  const hourly = days ? s.gross / (days * cfg.office_hours) : 0;
   const otHours = otMin / 60, otPay = otHours * hourly * (1 + (cfg.ot_premium || 0) / 100), deductions = pf + pt + tds;
-  return { emp_id: emp.id, month, working_days: working, paid_days: round(working - lop), lop_days: round(lop),
+  return { emp_id: emp.id, month, working_days: days, paid_days: round(paidDays), lop_days: round(fixedDays ? days - paidDays : lop),
     basic: round(basic), hra: round(hra), special: round(special), gross: round(gross),
     pf: round(pf), pt: round(pt), tds: round(tds), reimbursements: round(reimb),
     ot_hours: round(otHours), ot_pay: round(otPay), partial_hours: round(partialMin / 60), hourly_rate: round(hourly),

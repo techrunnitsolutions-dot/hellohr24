@@ -515,6 +515,13 @@ route('PUT', '/api/settings/weekend', ({ user, body }) => {
   weekendCache.clear();
   return { weekend: weekendDays() };
 });
+// how many days a month's salary is counted over (actual working days, a fixed 30 or 31, or the calendar month)
+route('PUT', '/api/settings/salary-days', ({ user, body }) => {
+  need(can(user, 'settings'));
+  if (!['working', '30', '31', 'calendar'].includes(String(body.basis))) bad('Choose working days, 30 days, 31 days or the calendar month');
+  run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'salary_days', String(body.basis));
+  return { salary_days: attCfg().salary_days };
+});
 // holidays & leave types
 route('GET', '/api/holidays', () => all('SELECT * FROM holidays ORDER BY date'));
 // one holiday of N days = N consecutive calendar days with the same name (holidays are never working days, so nobody's pay is cut for them)

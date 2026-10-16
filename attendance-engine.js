@@ -29,6 +29,7 @@ function normCfg(r = {}) {
     salary_day: Math.min(28, Math.max(1, Math.round(num(r.salary_day, 7)))), ot_premium: num(r.ot_premium_percent, 75),   // payroll rules that live next to the attendance rules
   };
   c.weekend = parseWeekend(r.weekend_days);
+  c.salary_days = ['working', '30', '31', 'calendar'].includes(r.salary_days) ? r.salary_days : 'working';   // which days a month's salary is divided over
   c.grace_end = fmtMin(toMin(c.office_start) + c.grace_minutes);
   c.office_hours = (toMin(c.office_end) - toMin(c.office_start)) / 60;
   return c;

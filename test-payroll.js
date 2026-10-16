@@ -63,4 +63,18 @@ eq('bad amount refused', (() => { try { P.resolveSalary('ctc', -1); } catch (e) 
   const sl = c => P.buildSlip({ emp, month: MONTH, today: TODAY, cfg: c, hols: HOLS, dayOf: () => ({ status: 'office', minutes: 540 }) });
   eq('Fri+Sat off: working days follow the company', sl(cfgFS).working_days, count([5, 6])); eq('only Sunday off', sl(cfgSun).working_days, count([0])); eq('seven-day week', sl(cfgNone).working_days, 30);
   eq('a full month still pays the full salary whatever the weekend', [sl(cfgFS).gross, sl(cfgSun).gross, sl(cfgNone).gross], [100000, 100000, 100000]); }
+// salary counted over 30 / 31 days or the calendar month
+{ const c30 = E.normCfg({ salary_days: '30' }), c31 = E.normCfg({ salary_days: '31' }), cCal = E.normCfg({ salary_days: 'calendar' });
+  eq('salary_days default and validation', [cfg.salary_days, E.normCfg({ salary_days: 'x' }).salary_days, c31.salary_days], ['working', 'working', '31']);
+  const abs = { [wdays[0]]: { status: 'absent', minutes: 0 } }, run = (c, over = {}, extra = {}) => P.buildSlip({ emp, month: MONTH, today: TODAY, cfg: c, hols: HOLS, dayOf: d => over[d] || { status: 'office', minutes: 540 }, ...extra });
+  eq('30 days: full month pays full salary', [run(c30).gross, run(c30).working_days, run(c30).paid_days], [100000, 30, 30]);
+  eq('30 days: one absent day costs 1/30', [run(c30, abs).gross, run(c30, abs).lop_days], [P.round(100000 * 29 / 30), 1]);
+  eq('31 days: one absent day costs 1/31 (a 30-day month still divides by 31)', [run(c31, abs).gross, run(c31).working_days], [P.round(100000 * 30 / 31), 31]);
+  eq('calendar month: September has 30 days', [run(cCal, abs).gross, run(cCal).working_days], [P.round(100000 * 29 / 30), 30]);
+  eq('working days (default) unchanged: one absent day costs 1/22', run(cfg, abs).gross, 100000 * 21 / 22);
+  eq('30 days: hourly rate = monthly / (30 x 9)', run(c30).hourly_rate, 100000 / (30 * 9));
+  eq('30 days: overtime uses that hourly rate + 75%', run(c30, { [wdays[3]]: { status: 'office', minutes: 660 } }).ot_pay, 2 * (100000 / (30 * 9)) * 1.75);
+  eq('joined on the 16th: every day before it is unpaid, weekends too (calendar)', [run(cCal, {}, { emp: { ...emp, join_date: '2026-09-16' } }).lop_days, run(cCal, {}, { emp: { ...emp, join_date: '2026-09-16' } }).gross], [15, P.round(100000 * 15 / 30)]);
+  eq('absence can never push pay below zero', run(c30, Object.fromEntries(wdays.map(d => [d, { status: 'absent', minutes: 0 }]))).gross >= 0, true);
+  eq('weekend + holiday are paid in a fixed month even when nobody punched', run(c30, { [wdays[5]]: { status: 'absent', minutes: 0, manual: false } }, { hols: new Set([wdays[5]]) }).gross, 100000); }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
