@@ -21,6 +21,14 @@ function parseWeekend(v) {
   const d = [...new Set(String(v).split(',').map(x => Number(x.trim())).filter(x => Number.isInteger(x) && x >= 0 && x <= 6))].sort((a, b) => a - b);
   return d.length && d.length < 7 ? d : [0, 6];
 }
+// half-day-off weekdays (e.g. Saturday): working days where only half the office day is expected. "" / missing = none
+function parseDays(v) { return [...new Set(String(v || '').split(',').filter(x => x.trim() !== '').map(x => Number(x.trim())).filter(x => Number.isInteger(x) && x >= 0 && x <= 6))].sort((a, b) => a - b); }
+// the rules for one date: on a half-day-off weekday the office day and the hour thresholds are halved
+function dayCfg(cfg, date) {
+  if (!(cfg.half_off || []).length || !cfg.half_off.includes(new Date(date + 'T00:00:00Z').getUTCDay())) return cfg;
+  const oh = cfg.office_hours / 2;
+  return { ...cfg, office_hours: oh, half_day_hours: cfg.half_day_hours / 2, full_day_hours: cfg.full_day_hours / 2, office_end: fmtMin(toMin(cfg.office_start) + Math.round(oh * 60)), half_off_day: true };
+}
 function normCfg(r = {}) {
   const num = (v, d) => (v !== undefined && v !== null && v !== '' && !isNaN(+v)) ? +v : d;
   const c = {
@@ -29,6 +37,7 @@ function normCfg(r = {}) {
     salary_day: Math.min(28, Math.max(1, Math.round(num(r.salary_day, 7)))), ot_premium: num(r.ot_premium_percent, 75),   // payroll rules that live next to the attendance rules
   };
   c.weekend = parseWeekend(r.weekend_days);
+  c.half_off = parseDays(r.half_off_days).filter(d => !c.weekend.includes(d));
   c.salary_days = ['working', '30', '31', 'calendar'].includes(r.salary_days) ? r.salary_days : 'working';   // which days a month's salary is divided over
   c.grace_end = fmtMin(toMin(c.office_start) + c.grace_minutes);
   c.office_hours = (toMin(c.office_end) - toMin(c.office_start)) / 60;
@@ -48,6 +57,7 @@ function workedSecs(rec, sessions, date, nowS, todayS) {
 
 // ctx = how many "late relaxation" / "short day" allowances were already used earlier in the same month.
 function derive(rec, date, cfg, ctx = { late_used: 0, short_used: 0 }, sessions = [], nowS = '00:00:00', todayS = '') {
+  cfg = dayCfg(cfg, date);
   const nowT = nowS.slice(0, 5);
   if (rec && rec.manual) return { status: rec.status === 'present' ? 'office' : rec.status, reason: 'Set by admin', manual: true, late: false, minutes: Math.floor(workedSecs(rec, sessions, date, nowS, todayS) / 60) };
   if (!rec) {
@@ -99,4 +109,4 @@ function projectNow(rec, sessions, date, cfg, ctxBefore, nowS, todayS) {
   return derive({ ...rec, check_out: nowS.slice(0, 5) }, date, cfg, ctxBefore, closed, nowS, todayS);
 }
 
-module.exports = { parseWeekend, toMin, toSec, fmtMin, fmtHM, normCfg, isOpen, workedSecs, derive, monthWalk, projectNow };
+module.exports = { parseDays, dayCfg, parseWeekend, toMin, toSec, fmtMin, fmtHM, normCfg, isOpen, workedSecs, derive, monthWalk, projectNow };

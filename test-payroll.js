@@ -83,4 +83,15 @@ eq('bad amount refused', (() => { try { P.resolveSalary('ctc', -1); } catch (e) 
   eq('split: basic', p.basic, 50000); eq('split: hra', p.hra, 20000); eq('split: allowances (special + medical)', p.special, 23000); eq('split: gross excludes PF/ESI', p.gross, 93000); eq('split: PF+ESI from the percentages', p.pf, 7000);
   eq('split: in-hand employees ignore a stored split', slip({}, { emp: { ...es, salary_type: 'inhand' } }).basic, 40000);
   eq('split: half the month paid pro-rates every section', slip(Object.fromEntries(wdays.slice(0, 11).map(d => [d, { status: 'absent', minutes: 0 }])), { emp: es }).basic, 25000); }
+{ // Saturday = half day off (only half the office day is expected), Sunday = full day off
+  const cH = E.normCfg({ weekend_days: '0', half_off_days: '6' }), sats = ['2026-09-05', '2026-09-12', '2026-09-19', '2026-09-26'];
+  const sH = (over = {}) => P.buildSlip({ emp, month: MONTH, today: TODAY, cfg: cH, hols: HOLS, dayOf: d => over[d] || { status: 'office', minutes: new Date(d + 'T00:00:00Z').getUTCDay() === 6 ? 270 : 540 } });
+  eq('half-off: working days = 22 weekdays + 4 half Saturdays', sH().working_days, 24); eq('half-off: full attendance, full pay', sH().gross, 100000);
+  eq('half-off: one absent Saturday costs half a day', sH({ [sats[0]]: { status: 'absent', minutes: 0 } }).lop_days, 0.5);
+  eq('half-off: 4.5h on a Saturday is a full Saturday, no overtime', sH().ot_hours, 0);
+  const sat = E.derive({ date: sats[0], check_in: '09:30', check_out: '14:00', mode: 'office' }, sats[0], cH, undefined, [], '23:00:00', '2026-10-15');
+  eq('half-off: 4.5h worked on a half-off Saturday = full day', sat.status, 'office');
+  const wd = E.derive({ date: '2026-09-02', check_in: '09:30', check_out: '14:00', mode: 'office' }, '2026-09-02', cH, undefined, [], '23:00:00', '2026-10-15');
+  eq('half-off: the same 4.5h on a weekday is only a half day', wd.status, 'half');
+  eq('half-off: parseDays handles empty', E.parseDays(''), []); }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

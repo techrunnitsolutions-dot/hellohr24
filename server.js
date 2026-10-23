@@ -74,10 +74,17 @@ function weekendDays() {
   if (hit && now - hit.t < 3000) return hit.v;
   const v = AE.parseWeekend((get("SELECT value FROM settings WHERE key='weekend_days'") || {}).value); weekendCache.set(key, { v, t: now }); return v;
 }
+const halfCache = new Map();
+function halfOffDays() {
+  const key = ctx().company ? ctx().company.id : 'none', hit = halfCache.get(key), now = Date.now();
+  if (hit && now - hit.t < 3000) return hit.v;
+  const wk = weekendDays(), v = AE.parseDays((get("SELECT value FROM settings WHERE key='half_off_days'") || {}).value).filter(d => !wk.includes(d)); halfCache.set(key, { v, t: now }); return v;
+}
+const dayWeight = ds => halfOffDays().includes(utc(ds).getUTCDay()) ? 0.5 : 1;   // a half-day-off weekday is half a working day
 const isWorkday = (ds, hols) => !weekendDays().includes(utc(ds).getUTCDay()) && !hols.has(ds);
 const workdaysBetween = (from, to) => {
   const hols = holidaySet(); let n = 0;
-  for (let d = from; d <= to; d = addDays(d, 1)) if (isWorkday(d, hols)) n++;
+  for (let d = from; d <= to; d = addDays(d, 1)) if (isWorkday(d, hols)) n += dayWeight(d);
   return n;
 };
 const teamIds = u => can(u, 'team') ? all('SELECT id FROM employees WHERE manager_id=?', u.id).map(e => e.id) : [];
@@ -175,7 +182,7 @@ route('GET', '/api/lookups', ({ user }) => {
   return {
     departments: all('SELECT * FROM departments ORDER BY name'),
     leaveTypes: all('SELECT * FROM leave_types ORDER BY id'),
-    weekend: weekendDays(),
+    weekend: weekendDays(), half_off: halfOffDays(),
     employees: all("SELECT id,emp_code,name,role,designation FROM employees WHERE status!='exited' ORDER BY name").filter(e => staff || e.id === user.id || team.has(e.id)),
   };
 });
@@ -525,10 +532,13 @@ route('PUT', '/api/settings/weekend', ({ user, body }) => {
   need(can(user, 'settings'));
   const days = [...new Set((Array.isArray(body.days) ? body.days : []).map(Number))].sort((a, b) => a - b);
   if (days.some(d => !Number.isInteger(d) || d < 0 || d > 6)) bad('Choose days of the week');
+  const half = [...new Set((Array.isArray(body.half) ? body.half : []).map(Number))].filter(d => !days.includes(d)).sort((a, b) => a - b);
+  if (half.some(d => !Number.isInteger(d) || d < 0 || d > 6)) bad('Choose days of the week');
   if (days.length >= 7) bad('At least one day of the week must be a working day');
   run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'weekend_days', days.length ? days.join(',') : 'none');
-  weekendCache.clear();
-  return { weekend: weekendDays() };
+  run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'half_off_days', half.join(','));
+  weekendCache.clear(); halfCache.clear();
+  return { weekend: weekendDays(), half_off: halfOffDays() };
 });
 // how many days a month's salary is counted over (actual working days, a fixed 30 or 31, or the calendar month)
 route('PUT', '/api/settings/salary-days', ({ user, body }) => {

@@ -10,6 +10,7 @@
 //  - Salary day (default the 7th) is the date the previous month's salary is paid.
 const round = n => Math.round(n * 100) / 100;
 
+const AE = require('./attendance-engine');
 function annualTax(ctc) {
   const taxable = Math.max(0, ctc - 75000);
   const slabs = [[400000, 0], [800000, .05], [1200000, .10], [1600000, .15], [2000000, .20], [2400000, .25], [Infinity, .30]];
@@ -75,24 +76,25 @@ function resolveSalary(type, amount) {
 // With a fixed or calendar month, weekly offs and holidays are paid days; only unpaid absence costs a day's salary.
 // dayOf(date) must return the derived attendance of that day: { status, minutes, manual, in_progress }
 function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0 }) {
-  const first = month + '-01', last = lastDay(month), officeMin = Math.round(cfg.office_hours * 60), halfMin = cfg.half_day_hours * 60;
+  const first = month + '-01', last = lastDay(month);
   let working = 0, lop = 0, partialMin = 0, otMin = 0;
   const basis = cfg.salary_days || 'working', fixedDays = basis === '30' ? 30 : basis === '31' ? 31 : basis === 'calendar' ? Number(last.slice(8)) : 0;
   for (let d = first; d <= last; d = addDays(d, 1)) {
     const w = new Date(d + 'T00:00:00Z').getUTCDay();
     if ((cfg.weekend || [0, 6]).includes(w) || hols.has(d)) { if (fixedDays && (d < emp.join_date || (emp.exit_date && d > emp.exit_date))) lop++; continue; }   // off days are paid, except before joining / after leaving
-    working++;
-    if (d < emp.join_date) { lop++; continue; }
-    if (emp.exit_date && d > emp.exit_date) { lop++; continue; }
+    const dc = AE.dayCfg(cfg, d), wt = dc === cfg ? 1 : 0.5, officeMin = Math.round(dc.office_hours * 60), halfMin = dc.half_day_hours * 60;   // a half-day-off weekday counts as half a working day
+    working += wt;
+    if (d < emp.join_date) { lop += wt; continue; }
+    if (emp.exit_date && d > emp.exit_date) { lop += wt; continue; }
     if (d > today) continue;
     const dv = dayOf(d), st = dv.status, final = !dv.manual && !dv.in_progress && !dv.open;
     if (final && ['office', 'wfh', 'half'].includes(st) && dv.minutes > officeMin) otMin += dv.minutes - officeMin;   // overtime beyond the office day
     if (st === 'pending' || st === 'office' || st === 'wfh') continue;
-    if (st === 'half') { lop += 0.5; continue; }
+    if (st === 'half') { lop += 0.5 * wt; continue; }
     const lv = leaves.find(l => l.from_date <= d && l.to_date >= d);
     if (lv && lv.is_paid) continue;
-    if (final && dv.minutes > 0 && dv.minutes < halfMin) { lop += 1 - Math.min(dv.minutes, officeMin) / officeMin; partialMin += dv.minutes; continue; }   // short day: paid for the hours only
-    lop++;
+    if (final && dv.minutes > 0 && dv.minutes < halfMin) { lop += wt * (1 - Math.min(dv.minutes, officeMin) / officeMin); partialMin += dv.minutes; continue; }   // short day: paid for the hours only
+    lop += wt;
   }
   const days = fixedDays || working, paidDays = Math.max(0, Math.min(days, days - lop));
   const sp = emp.salary_type === 'inhand' ? null : parseSplit(emp.salary_split), s = sp ? splitStructure(emp.ctc, sp) : structure(emp.ctc), ratio = days ? paidDays / days : 0;
