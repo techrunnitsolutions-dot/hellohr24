@@ -291,6 +291,7 @@ function fieldHtml(f) {
   return f.showIf ? `<div class="full" data-showif="${f.showIf}">${h}</div>` : h;
 }
 function fieldHtml0(f) {
+  if (f.type === 'split') return `<fieldset class="perms full" ${f.always ? '' : 'data-showif="salary_type=ctc"'}><legend>${esc(f.label)}</legend><div class="formgrid">${SPLIT_ROWS.map(([k, l]) => k === 'special' ? `<label>${l} (balance %)<input name="sp_special" type="number" readonly tabindex="-1"><small class="muted" data-spamt="special"></small></label>` : `<label>${l} (% of CTC)<input name="sp_${k}" type="number" min="0" max="100" step="0.01" value="${(f.defaults || {})[k] ?? ''}"><small class="muted" data-spamt="${k}"></small></label>`).join('')}</div><small class="muted" data-sptotal></small></fieldset>`;
   const v = f.value ?? '', req = f.required ? 'required' : '', n = `name="${f.name}"`;
   let inp;
   if (f.type === 'file') return `<label class="${f.full ? 'full' : ''}">${esc(f.label)}<input ${n} type="file" accept="${f.accept || 'image/png,image/jpeg,image/webp'}"></label>`;
@@ -306,9 +307,10 @@ function openForm({ title, fields, submit = 'Save', onSubmit, wide, intro }) {
     <div class="err" id="mfErr"></div><div class="actions"><button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">${esc(submit)}</button></div></form>`, wide);
   const mf = $('#mf'), sync = () => mf.querySelectorAll('[data-showif]').forEach(el => { const [n, val] = el.dataset.showif.split('='); el.style.display = mf.elements[n].value === val ? '' : 'none'; });
   mf.addEventListener('change', sync); sync();
+  if (fields.some(f => f.type === 'split')) { const ss = () => splitSync(mf); mf.addEventListener('input', ss); mf.addEventListener('change', ss); ss(); }
   $('#mf').addEventListener('submit', async e => {
     e.preventDefault(); const vals = {};
-    for (const f of fields) { if (f.type === 'checks') { vals[f.name] = [...e.target.querySelectorAll(`input[name="${f.name}"]:checked`)].map(x => x.value); continue; } const el = e.target.elements[f.name]; vals[f.name] = f.type === 'checkbox' ? el.checked : f.type === 'file' ? (el.files[0] || null) : el.value; }
+    for (const f of fields) { if (f.type === 'split') { vals[f.name] = Object.fromEntries(SPLIT_ROWS.filter(r => r[0] !== 'special').map(([k]) => [k, +e.target.elements['sp_' + k].value || 0])); continue; } if (f.type === 'checks') { vals[f.name] = [...e.target.querySelectorAll(`input[name="${f.name}"]:checked`)].map(x => x.value); continue; } const el = e.target.elements[f.name]; vals[f.name] = f.type === 'checkbox' ? el.checked : f.type === 'file' ? (el.files[0] || null) : el.value; }
     try { await onSubmit(vals); closeModal(); route(); } catch (err) { $('#mfErr').textContent = err.message; }
   });
 }
@@ -412,7 +414,7 @@ const empFields = (e = {}, adding) => [
   ...(isAdmin() && e.role !== 'admin' ? accessFields(e) : []),
   { name: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time', 'Contract', 'Intern'].map(x => [x, x]), value: e.employment_type },
   { name: 'location', label: 'Work location', value: e.location }, { name: 'work_type', label: 'Work type', type: 'select', options: WORK_TYPES.map(x => [x, x]), value: e.work_type || 'Office' }, { name: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Other'].map(x => [x, x]), value: e.gender, blank: '—' },
-  { name: 'dob', label: 'Date of birth', type: 'date', value: e.dob }, ...(can('payroll') ? (adding ? SALARY_FIELDS() : [{ name: 'salary_amount', label: `Annual ${e.salary_type === 'inhand' ? 'in-hand' : 'CTC'} (₹) — change the basis from Salary method`, type: 'number', value: e.salary_type === 'inhand' && e.salary_amount != null ? e.salary_amount : e.ctc, min: 0 }]) : []),
+  { name: 'dob', label: 'Date of birth', type: 'date', value: e.dob }, ...(can('payroll') ? (adding ? SALARY_FIELDS() : [{ name: 'salary_amount', label: `Annual ${e.salary_type === 'inhand' ? 'in-hand' : 'CTC'} (₹) — change the basis from Salary method`, type: 'number', value: e.salary_type === 'inhand' && e.salary_amount != null ? e.salary_amount : e.ctc, min: 0 }, ...(e.salary_type === 'inhand' ? [] : [{ name: 'salary_split', label: 'Salary sections (percentage of annual CTC)', type: 'split', always: true, defaults: (() => { try { return JSON.parse(e.salary_split) || { basic: 40, hra: 20 }; } catch { return { basic: 40, hra: 20 }; } })() }])]) : []),
   ...(can('settings') && e.role !== 'admin' ? [{ name: 'punch_anywhere', label: '📍 Geo-fencing OFF: this employee can punch in / out from anywhere (untick = must be at the office)', type: 'checkbox', value: !!e.geo_exempt, full: true }] : []),
   { name: 'pan', label: 'PAN', value: e.pan }, { name: 'bank_account', label: 'Bank account no.', value: e.bank_account },
   { name: 'address', label: 'Address', type: 'textarea', value: e.address, full: true },
@@ -421,8 +423,19 @@ const empFields = (e = {}, adding) => [
 const addEmployee = (prefill = {}, after) => openForm({ title: 'Add employee', wide: true, submit: 'Create employee', fields: empFields(prefill, true),
   onSubmit: async v => { const r = await api('POST', '/api/employees', v); S.lk = await api('GET', '/api/lookups'); setTimeout(() => modal(`<h2>Employee created ✅</h2><p>Share these login details with the employee (they sign in on the employee login page):</p><dl class="kv"><dt>Employee ID</dt><dd><b>${esc(r.emp_code)}</b></dd><dt>Password</dt><dd><b>${esc(r.password)}</b></dd></dl>${salaryNote(r.salary)}<div class="actions"><button class="btn primary" data-act="closeModal">Done</button></div>`), 50); if (after) await after(r.id); } });
 
-const SALARY_FIELDS = () => [{ name: 'salary_type', label: 'Salary basis', type: 'select', options: [['ctc', 'Annual CTC (cost to company)'], ['inhand', 'Annual in-hand (take-home)']], value: 'ctc' }, { name: 'salary_amount', label: 'Annual amount (₹)', type: 'number', min: 0 }];
-const salaryNote = s => s ? `<dl class="kv"><dt>Salary basis</dt><dd><b>${s.type === 'inhand' ? 'Annual in-hand' : 'Annual CTC'}</b> ${inr(s.amount)}</dd><dt>Annual CTC</dt><dd>${inr(s.ctc)}</dd><dt>Take-home / month</dt><dd>${inr(s.inhand_monthly)} <small class="muted">(before overtime)</small></dd></dl>` : '';
+const SPLIT_ROWS = [['basic', 'Basic'], ['hra', 'HRA'], ['special', 'Special allowance'], ['pf', 'PF'], ['esi', 'ESI'], ['medical', 'Medical'], ['travel', 'Travel'], ['variable', 'Variable'], ['ta', 'TA'], ['da', 'DA']];
+// shows each section's yearly rupee amount, the balance left for special allowance, and relabels the amount box for the chosen basis
+function splitSync(mf) {
+  const el = n => mf.elements[n], ctc = !mf.elements.salary_type || el('salary_type').value === 'ctc', total = SPLIT_ROWS.filter(r => r[0] !== 'special').reduce((a, [k]) => a + (+el('sp_' + k).value || 0), 0);
+  const amt = +el('salary_amount').value || 0, rest = Math.round((100 - total) * 100) / 100;
+  el('sp_special').value = rest;
+  mf.querySelectorAll('[data-spamt]').forEach(s => { const p = s.dataset.spamt === 'special' ? rest : (+el('sp_' + s.dataset.spamt).value || 0); s.textContent = amt && ctc ? inr(amt * p / 100) + ' / year' : ''; });
+  const t = mf.querySelector('[data-sptotal]'); if (t) { t.textContent = rest < 0 ? `Total ${Math.round(total * 100) / 100}% — more than 100%, reduce a section` : `Total ${Math.round(total * 100) / 100}% filled · ${rest}% goes to special allowance`; t.style.color = rest < 0 ? 'var(--bad, #c0392b)' : ''; }
+  const lab = mf.elements.salary_type && el('salary_amount').parentNode.firstChild; if (lab && lab.nodeType === 3) lab.textContent = ctc ? 'Annual CTC (₹)' : 'Annual in-hand (₹) — exact yearly take-home';
+}
+const SALARY_FIELDS = () => [{ name: 'salary_type', label: 'Salary basis', type: 'select', options: [['ctc', 'Annual CTC (cost to company)'], ['inhand', 'Annual in-hand (take-home)']], value: 'ctc' }, { name: 'salary_amount', label: 'Annual CTC (₹)', type: 'number', min: 0 }, { name: 'salary_split', label: 'Salary sections (percentage of annual CTC)', type: 'split', defaults: { basic: 40, hra: 20 } }];
+const splitNote = s => { const p = s.split || (s.salary_split); return p ? SPLIT_ROWS.filter(([k]) => p[k]).map(([k, l]) => `<dt>${l} (${p[k]}%)</dt><dd>${inr(s.amount * p[k] / 100)} / year</dd>`).join('') : ''; };
+const salaryNote = s => s ? `<dl class="kv"><dt>Salary basis</dt><dd><b>${s.type === 'inhand' ? 'Annual in-hand' : 'Annual CTC'}</b> ${inr(s.amount)}</dd>${s.type === 'inhand' ? `<dt>Take-home / month</dt><dd>${inr(Math.round(s.amount / 12))} <small class="muted">(before overtime)</small></dd>` : `<dt>Annual CTC</dt><dd>${inr(s.ctc)}</dd><dt>Take-home / month</dt><dd>${inr(s.inhand_monthly)} <small class="muted">(before overtime)</small></dd>`}${s.type === 'inhand' ? '' : splitNote(s)}</dl>` : '';
 PAGES.employees = async () => {
   const q = S.empQ || {};
   const list = await api('GET', '/api/employees');
@@ -448,7 +461,7 @@ PAGES.employee = async id => {
   const e = await api('GET', '/api/employees/' + id), me = S.user, hrv = can('employees');
   const prof = (can('employees') && e.id !== me.id) ? await api('GET', '/api/profile?emp_id=' + e.id).catch(() => null) : null;
   let sal = '', bal = '';
-  if (can('payroll') || e.id === me.id) { const s = await api('GET', '/api/salary-structure?emp_id=' + e.id); sal = `<div class="card"><h2>Salary structure (monthly)</h2><dl class="kv"><dt>Salary basis</dt><dd>${s.salary_type === 'inhand' ? 'Annual in-hand' : 'Annual CTC'}${s.salary_type === 'inhand' && s.salary_amount != null ? ' <b>' + inr(s.salary_amount) + '</b>' : ''}</dd><dt>Annual CTC</dt><dd><b>${inr(s.ctc)}</b></dd><dt>Take-home / month</dt><dd>${inr(s.breakdown.inhand_monthly)}</dd><dt>Basic</dt><dd>${inr(s.monthly.basic)}</dd><dt>HRA</dt><dd>${inr(s.monthly.hra)}</dd><dt>Special allowance</dt><dd>${inr(s.monthly.special)}</dd><dt>Gross / month</dt><dd><b>${inr(s.monthly.gross)}</b></dd><dt>Est. annual tax</dt><dd>${inr(s.annualTax)} <small class="muted">(new regime estimate)</small></dd></dl></div>`; }
+  if (can('payroll') || e.id === me.id) { const s = await api('GET', '/api/salary-structure?emp_id=' + e.id); sal = `<div class="card"><h2>Salary structure (monthly)</h2><dl class="kv"><dt>Salary basis</dt><dd>${s.salary_type === 'inhand' ? 'Annual in-hand' : 'Annual CTC'}${s.salary_type === 'inhand' && s.salary_amount != null ? ' <b>' + inr(s.salary_amount) + '</b>' : ''}</dd>${s.salary_type === 'inhand' ? `<dt>Take-home / month</dt><dd><b>${inr(Math.round((s.salary_amount || 0) / 12))}</b></dd></dl></div>` : `<dt>Annual CTC</dt><dd><b>${inr(s.ctc)}</b></dd><dt>Take-home / month</dt><dd>${inr(s.breakdown.inhand_monthly)}</dd>${s.salary_split ? SPLIT_ROWS.filter(([k]) => s.salary_split[k]).map(([k, l]) => `<dt>${l} (${s.salary_split[k]}%)</dt><dd>${inr(s.ctc / 12 * s.salary_split[k] / 100)}</dd>`).join('') : `<dt>Basic</dt><dd>${inr(s.monthly.basic)}</dd><dt>HRA</dt><dd>${inr(s.monthly.hra)}</dd><dt>Special allowance</dt><dd>${inr(s.monthly.special)}</dd>`}<dt>Gross / month</dt><dd><b>${inr(s.monthly.gross)}</b></dd><dt>Est. annual tax</dt><dd>${inr(s.annualTax)} <small class="muted">(new regime estimate)</small></dd></dl></div>`}`; }
   if (e.pan !== undefined) { const b = await api('GET', '/api/leaves/balance?emp_id=' + e.id); bal = `<div class="card"><h2>Leave balance</h2>${b.filter(x => x.days_per_year).map(x => `<div style="display:flex;justify-content:space-between"><span>${esc(x.name)}</span><b>${x.balance} / ${x.days_per_year}</b></div>`).join('')}</div>`; }
   const kv = [['Employee ID', e.emp_code], ['Email', e.email], ['Phone', e.phone], ['Department', e.dept], ['Designation', e.designation], ['Reports to', e.manager ? `<a href="#/employee/${e.manager_id}">${esc(e.manager)}</a>` : '—'], ['Joined', fd(e.join_date)], ['Type', e.employment_type], ['Location', e.location], ['Work type', e.work_type], ['Role', e.role],
     ...(e.pan !== undefined ? [['DOB', fd(e.dob)], ['Gender', e.gender], ['PAN', e.pan], ['Bank a/c', e.bank_account], ['Address', e.address]] : [])];
@@ -988,7 +1001,7 @@ PAGES.salary = async () => {
     ${table([{ h: 'Employee', f: r => `<a href="#/employee/${r.id}"><b>${esc(r.name)}</b></a><br><small class="muted">${esc(r.emp_code)} · ${esc(r.designation || '')}</small>` },
       { h: 'Salary basis', f: r => `<select data-saltype="${r.id}"><option value="ctc" ${r.salary_type === 'ctc' ? 'selected' : ''}>Annual CTC</option><option value="inhand" ${r.salary_type === 'inhand' ? 'selected' : ''}>Annual in-hand</option></select>` },
       { h: 'Annual amount (₹)', f: r => `<input type="number" min="0" style="width:140px" data-salamt="${r.id}" value="${Math.round(r.salary_amount || 0)}">` },
-      { h: 'Annual CTC', f: r => `<span id="sc${r.id}">${inr(r.ctc)}</span>` }, { h: 'Annual in-hand', f: r => `<span id="si${r.id}">${inr(r.inhand_annual)}</span>` }, { h: 'In-hand / month', f: r => `<b id="sm${r.id}">${inr(r.inhand_monthly)}</b>` }], rows, 'No employees yet.')}</div>
+      { h: 'Annual CTC', f: r => `<span id="sc${r.id}">${r.salary_type === 'inhand' ? '—' : inr(r.ctc)}</span>` }, { h: 'Annual in-hand', f: r => `<span id="si${r.id}">${inr(r.inhand_annual)}</span>` }, { h: 'In-hand / month', f: r => `<b id="sm${r.id}">${inr(r.inhand_monthly)}</b>` }], rows, 'No employees yet.')}</div>
     <div class="card"><h2>Recent salary changes</h2>${table([{ h: 'When', f: x => fd(x.at.slice(0, 10)) }, { h: 'Employee', f: x => esc(x.name || '') + ' <small class="muted">' + esc(x.emp_code || '') + '</small>' }, { h: 'Change', f: x => (x.kind === 'basis' ? 'Basis: ' : 'Pay: ') + esc(x.before_text) + ' → ' + esc(x.after_text) }, { h: 'By', f: x => esc(x.by_name || '') }], log, 'No changes yet.')}</div>`;
 };
 const SAL_ACTIONS = {
@@ -1003,7 +1016,7 @@ async function salRowChanged(id, el) {
   const r = S._sal.find(x => x.id == id), t = document.querySelector(`[data-saltype="${id}"]`), a = document.querySelector(`[data-salamt="${id}"]`);
   if (el.dataset.saltype) a.value = Math.round(t.value === 'ctc' ? r.ctc : r.inhand_annual);   // switching basis keeps the pay
   const p = await api('POST', '/api/salary/preview', { salary_type: t.value, salary_amount: a.value });
-  $('#sc' + id).textContent = inr(p.ctc); $('#si' + id).textContent = inr(p.inhand_annual); $('#sm' + id).textContent = inr(p.inhand_monthly);
+  $('#sc' + id).textContent = t.value === 'inhand' ? '—' : inr(p.ctc); $('#si' + id).textContent = inr(p.inhand_annual); $('#sm' + id).textContent = inr(p.inhand_monthly);
   S._salEdits[id] = { type: t.value, amount: +a.value };
 }
 

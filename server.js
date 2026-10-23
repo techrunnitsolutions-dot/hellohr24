@@ -220,11 +220,11 @@ route('DELETE', '/api/departments/:id', ({ user, params }) => {
 });
 
 // employees
-const SENSITIVE = ['ctc', 'salary_type', 'salary_amount', 'pan', 'bank_account', 'address', 'dob', 'exit_reason', 'gender'];
+const SENSITIVE = ['ctc', 'salary_type', 'salary_amount', 'salary_split', 'pan', 'bank_account', 'address', 'dob', 'exit_reason', 'gender'];
 const without = (o, keys) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
 function shape(user, e, team) {
   if (!(e.id === user.id || can(user, 'employees') || team.has(e.id))) return without(e, SENSITIVE);
-  return e.id === user.id || can(user, 'payroll') ? e : without(e, ['ctc', 'salary_type', 'salary_amount']);
+  return e.id === user.id || can(user, 'payroll') ? e : without(e, ['ctc', 'salary_type', 'salary_amount', 'salary_split']);
 }
 route('GET', '/api/employees', ({ user, query }) => {
   const team = new Set(teamIds(user)), staff = isStaff(user);
@@ -258,6 +258,16 @@ function salaryInput(body) {
   if (!body.salary_type && (amount === undefined || amount === '' || amount === null)) return null;
   try { return PE.resolveSalary(type, amount || 0); } catch (e) { bad(e.message); }
 }
+// salary sections (percent of annual CTC); special allowance is whatever is left. Not used for in-hand salaries.
+const SPLIT_KEYS = ['basic', 'hra', 'pf', 'esi', 'medical', 'travel', 'variable', 'ta', 'da'];
+function salarySplit(body, type) {
+  if (type !== 'ctc' || !body.salary_split) return null;
+  const out = {}; let total = 0;
+  for (const k of SPLIT_KEYS) { const v = +body.salary_split[k] || 0; if (v < 0 || v > 100) bad('Salary percentages must be between 0 and 100'); out[k] = v; total += v; }
+  if (total > 100.0001) bad('Salary percentages add up to ' + Math.round(total * 100) / 100 + '%, which is more than 100%');
+  out.special = Math.round((100 - total) * 100) / 100;
+  return JSON.stringify(out);
+}
 const salaryText = e => e.salary_type === 'inhand' ? `in-hand ${round(e.salary_amount || 0)}` : `CTC ${round(e.ctc || 0)}`;
 function logSalary(empId, kind, before, after, user) { run('INSERT INTO salary_log(emp_id,kind,before_text,after_text,by_id,at) VALUES(?,?,?,?,?,?)', empId, kind, before, after, user.id, new Date().toISOString()); }
 function createEmployee(body) {
@@ -270,14 +280,14 @@ function createEmployee(body) {
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nextEmpCode(), body.name, body.email, hash(pw), acc.role, acc.permissions, body.phone, body.dept_id || null,
       body.designation, body.manager_id || null, body.join_date, body.gender, body.dob, body.address, sal ? sal.ctc : 0, body.pan, body.bank_account, body.location, body.employment_type || 'Full-time');
     const eid = r.lastInsertRowid;
-    if (sal) run('UPDATE employees SET salary_type=?, salary_amount=? WHERE id=?', sal.type, sal.amount, eid);
+    if (sal) run('UPDATE employees SET salary_type=?, salary_amount=?, salary_split=? WHERE id=?', sal.type, sal.amount, salarySplit(body, sal.type), eid);
     if (acc.role !== 'admin' && (body.punch_anywhere === true || body.punch_anywhere === 'true' || body.punch_anywhere === 1)) run('UPDATE employees SET geo_exempt=1 WHERE id=?', eid);
     ['Collect signed offer letter & ID proofs', 'Create email & system accounts', 'Issue laptop & access card', 'Complete HR induction', 'Assign buddy / reporting manager intro', 'Enroll in mandatory training']
       .forEach(t => run('INSERT INTO checklists(emp_id,kind,title) VALUES(?,?,?)', eid, 'onboarding', t));
     all('SELECT id FROM courses WHERE mandatory=1').forEach(c => run('INSERT OR IGNORE INTO enrollments(emp_id,course_id) VALUES(?,?)', eid, c.id));
     return eid;
   });
-  return { id, password: pw, emp_code: get('SELECT emp_code FROM employees WHERE id=?', id).emp_code, salary: sal };
+  return { id, password: pw, emp_code: get('SELECT emp_code FROM employees WHERE id=?', id).emp_code, salary: sal && { ...sal, split: JSON.parse(get('SELECT salary_split s FROM employees WHERE id=?', id).s || 'null') } };
 }
 route('POST', '/api/employees', ({ user, body }) => {
   need(user.role === 'admin', 'Only the company admin (or the master) can create employee accounts');
@@ -306,7 +316,12 @@ route('PUT', '/api/employees/:id', ({ user, params, body }) => {
         if (sal.ctc !== e.ctc) confirmPw(user, body);
         run('UPDATE employees SET ctc=?, salary_type=?, salary_amount=? WHERE id=?', sal.ctc, sal.type, sal.amount, id);
         logSalary(id, sal.ctc !== e.ctc ? 'edit' : 'basis', salaryText(e), salaryText({ ...e, ctc: sal.ctc, salary_type: sal.type, salary_amount: sal.amount }), user);
+        if (sal.type === 'inhand') run('UPDATE employees SET salary_split=NULL WHERE id=?', id);
       }
+    }
+    if (can(user, 'payroll') && body.salary_split && get('SELECT salary_type FROM employees WHERE id=?', id).salary_type !== 'inhand') {
+      const sp = salarySplit(body, 'ctc');
+      if (sp !== (e.salary_split || null)) { confirmPw(user, body); run('UPDATE employees SET salary_split=? WHERE id=?', sp, id); logSalary(id, 'split', 'sections ' + (e.salary_split || 'default 40/20/balance'), 'sections ' + sp, user); }
     }
     if (upd.length) run(`UPDATE employees SET ${upd.map(k => k + '=?').join(',')} WHERE id=?`, ...upd.map(k => body[k] === '' ? null : body[k]), id);
     if (isAdm && e.role !== 'admin' && 'account_type' in body) { const acc = parseAccess(body); run('UPDATE employees SET role=?, permissions=? WHERE id=?', acc.role, acc.permissions, id); }
@@ -653,8 +668,8 @@ route('GET', '/api/payslips', ({ user, query }) => {
 });
 route('GET', '/api/salary-structure', ({ user, query }) => {
   const id = +query.emp_id || user.id; need(can(user, 'payroll') || id === user.id);
-  const e = get('SELECT ctc, salary_type, salary_amount FROM employees WHERE id=?', id); const s = structure(e.ctc);
-  return { ctc: e.ctc, salary_type: e.salary_type || 'ctc', salary_amount: e.salary_amount, breakdown: PE.salaryBreakdown(e.ctc), monthly: Object.fromEntries(Object.entries(s).map(([k, v]) => [k, round(v)])), annualTax: round(annualTax(e.ctc)) };
+  const e = get('SELECT ctc, salary_type, salary_amount, salary_split FROM employees WHERE id=?', id), sp = e.salary_type === 'inhand' ? null : PE.parseSplit(e.salary_split), ss = sp ? PE.splitStructure(e.ctc, sp) : null, s = ss || structure(e.ctc);
+  return { ctc: e.ctc, salary_split: e.salary_split ? JSON.parse(e.salary_split) : null, salary_type: e.salary_type || 'ctc', salary_amount: e.salary_amount, breakdown: ss ? (() => { const b = PE.salaryBreakdown(e.ctc), pt = ss.gross > 15000 ? 200 : 0, tds = b.tds; return { ...b, gross_monthly: round(ss.gross), pf: round(ss.pfesi), pt, inhand_monthly: round(ss.gross - ss.pfesi - pt - tds), inhand_annual: round(12 * (ss.gross - ss.pfesi - pt - tds)) }; })() : PE.salaryBreakdown(e.ctc), monthly: Object.fromEntries(Object.entries(s).map(([k, v]) => [k, round(v)])), annualTax: round(annualTax(e.ctc)) };
 });
 
 // salary method: how each person's pay is expressed (annual CTC or annual in-hand)

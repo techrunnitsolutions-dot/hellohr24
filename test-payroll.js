@@ -77,4 +77,10 @@ eq('bad amount refused', (() => { try { P.resolveSalary('ctc', -1); } catch (e) 
   eq('joined on the 16th: every day before it is unpaid, weekends too (calendar)', [run(cCal, {}, { emp: { ...emp, join_date: '2026-09-16' } }).lop_days, run(cCal, {}, { emp: { ...emp, join_date: '2026-09-16' } }).gross], [15, P.round(100000 * 15 / 30)]);
   eq('absence can never push pay below zero', run(c30, Object.fromEntries(wdays.map(d => [d, { status: 'absent', minutes: 0 }]))).gross >= 0, true);
   eq('weekend + holiday are paid in a fixed month even when nobody punched', run(c30, { [wdays[5]]: { status: 'absent', minutes: 0, manual: false } }, { hols: new Set([wdays[5]]) }).gross, 100000); }
+{ // per-section percentages (CTC only): basic 50, HRA 20, PF 6, ESI 1, medical 2, rest special
+  const sp = JSON.stringify({ basic: 50, hra: 20, pf: 6, esi: 1, medical: 2 }), es = { ...emp, salary_type: 'ctc', salary_split: sp };
+  const p = slip({}, { emp: es });
+  eq('split: basic', p.basic, 50000); eq('split: hra', p.hra, 20000); eq('split: allowances (special + medical)', p.special, 23000); eq('split: gross excludes PF/ESI', p.gross, 93000); eq('split: PF+ESI from the percentages', p.pf, 7000);
+  eq('split: in-hand employees ignore a stored split', slip({}, { emp: { ...es, salary_type: 'inhand' } }).basic, 40000);
+  eq('split: half the month paid pro-rates every section', slip(Object.fromEntries(wdays.slice(0, 11).map(d => [d, { status: 'absent', minutes: 0 }])), { emp: es }).basic, 25000); }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS employees(
   phone TEXT, dept_id INTEGER REFERENCES departments(id), designation TEXT,
   manager_id INTEGER REFERENCES employees(id), join_date TEXT, status TEXT NOT NULL DEFAULT 'active',
   gender TEXT, dob TEXT, address TEXT, ctc REAL DEFAULT 0, pan TEXT, bank_account TEXT,
-  location TEXT, employment_type TEXT DEFAULT 'Full-time', exit_date TEXT, exit_reason TEXT, permissions TEXT, work_type TEXT DEFAULT 'Office', geo_exempt INTEGER DEFAULT 0, salary_type TEXT DEFAULT 'ctc', salary_amount REAL);
+  location TEXT, employment_type TEXT DEFAULT 'Full-time', exit_date TEXT, exit_reason TEXT, permissions TEXT, work_type TEXT DEFAULT 'Office', geo_exempt INTEGER DEFAULT 0, salary_type TEXT DEFAULT 'ctc', salary_amount REAL, salary_split TEXT);
 CREATE TABLE IF NOT EXISTS attendance(
   id INTEGER PRIMARY KEY, emp_id INTEGER NOT NULL, date TEXT NOT NULL, check_in TEXT, check_out TEXT,
   status TEXT NOT NULL DEFAULT 'present', mode TEXT DEFAULT 'office', manual INTEGER DEFAULT 0, UNIQUE(emp_id,date));
@@ -155,7 +155,7 @@ function pgHandle(schema, tables) {
   };
 }
 const schemaOf = file => 'c_' + String(file).replace(/\.db$/, '').replace(/[^a-z0-9]/gi, '_').toLowerCase();
-const TENANT_MIGRATIONS = "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS audience TEXT DEFAULT 'all'; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS target_ids TEXT; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS ask_file INTEGER DEFAULT 0; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS ask_reply INTEGER DEFAULT 0; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS att_file_id INTEGER; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_type TEXT DEFAULT 'ctc'; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_amount DOUBLE PRECISION; " + 'ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_pay DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS partial_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION;';
+const TENANT_MIGRATIONS = "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS audience TEXT DEFAULT 'all'; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS target_ids TEXT; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS ask_file INTEGER DEFAULT 0; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS ask_reply INTEGER DEFAULT 0; ALTER TABLE announcements ADD COLUMN IF NOT EXISTS att_file_id INTEGER; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_type TEXT DEFAULT 'ctc'; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_amount DOUBLE PRECISION; ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary_split TEXT; " + 'ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ot_pay DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS partial_hours DOUBLE PRECISION; ALTER TABLE payslips ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION;';
 function pgEnsureSchema(schema, ddl, extra = '') {
   pgCall(`BEGIN; SELECT pg_advisory_xact_lock(727274); CREATE SCHEMA IF NOT EXISTS "${schema}"; SET LOCAL search_path TO "${schema}"; ${ddlToPg(ddl)} ${extra} COMMIT;`, [], true);
 }
@@ -189,7 +189,7 @@ if (IS_PG) {
   tenantDb = file => {
     if (!tenants.has(file)) {
       const t = open(path.isAbsolute(file) ? file : path.join(DATA, file), SCHEMA);
-      ensure(t, 'employees', { permissions: 'TEXT', work_type: "TEXT DEFAULT 'Office'", geo_exempt: 'INTEGER DEFAULT 0', salary_type: "TEXT DEFAULT 'ctc'", salary_amount: 'REAL' });
+      ensure(t, 'employees', { permissions: 'TEXT', work_type: "TEXT DEFAULT 'Office'", geo_exempt: 'INTEGER DEFAULT 0', salary_type: "TEXT DEFAULT 'ctc'", salary_amount: 'REAL', salary_split: 'TEXT' });
       ensure(t, 'attendance', { manual: 'INTEGER DEFAULT 0' });
       ensure(t, 'announcements', { audience: "TEXT DEFAULT 'all'", target_ids: 'TEXT', ask_file: 'INTEGER DEFAULT 0', ask_reply: 'INTEGER DEFAULT 0', att_file_id: 'INTEGER' });
       ensure(t, 'payslips', { ot_hours: 'REAL', ot_pay: 'REAL', partial_hours: 'REAL', hourly_rate: 'REAL' });

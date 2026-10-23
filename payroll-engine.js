@@ -22,6 +22,16 @@ function structure(ctc) {
   const gross = ctc / 12, basic = gross * 0.4, hra = basic * 0.5, special = gross - basic - hra;
   return { gross, basic, hra, special };
 }
+// monthly pay when the admin set percentages per section (split, percent of CTC; only for CTC salaries).
+// Basic and HRA are their own lines; special allowance, medical, travel, variable, TA and DA are paid as allowances (one "special" line);
+// PF and ESI are taken out of the CTC, so they are never part of the gross.
+function splitStructure(ctc, sp) {
+  if (sp.special === undefined) sp = { ...sp, special: Math.max(0, 100 - ['basic', 'hra', 'pf', 'esi', 'medical', 'travel', 'variable', 'ta', 'da'].reduce((t, k) => t + (+sp[k] || 0), 0)) };
+  const m = ctc / 12, at = k => m * (+sp[k] || 0) / 100;
+  const basic = at('basic'), hra = at('hra'), special = ['special', 'medical', 'travel', 'variable', 'ta', 'da'].reduce((a, k) => a + at(k), 0), pfesi = at('pf') + at('esi');
+  return { gross: basic + hra + special, basic, hra, special, pfesi, ctcMonthly: m };
+}
+const parseSplit = x => { try { return typeof x === 'string' ? JSON.parse(x) : x || null; } catch { return null; } };
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const lastDay = month => new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).toISOString().slice(0, 10);
 // the day the salary for `month` is paid: the salary day of the following month
@@ -85,9 +95,9 @@ function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0
     lop++;
   }
   const days = fixedDays || working, paidDays = Math.max(0, Math.min(days, days - lop));
-  const s = structure(emp.ctc), ratio = days ? paidDays / days : 0;
+  const sp = emp.salary_type === 'inhand' ? null : parseSplit(emp.salary_split), s = sp ? splitStructure(emp.ctc, sp) : structure(emp.ctc), ratio = days ? paidDays / days : 0;
   const basic = s.basic * ratio, hra = s.hra * ratio, special = s.special * ratio, gross = basic + hra + special;
-  const pf = Math.min(basic, 15000) * 0.12, pt = gross > 15000 ? 200 : 0, tds = annualTax(emp.ctc) / 12 * ratio;
+  const pf = sp ? s.pfesi * ratio : Math.min(basic, 15000) * 0.12, pt = gross > 15000 ? 200 : 0, tds = annualTax(emp.ctc) / 12 * ratio;
   const hourly = days ? s.gross / (days * cfg.office_hours) : 0;
   const otHours = otMin / 60, otPay = otHours * hourly * (1 + (cfg.ot_premium || 0) / 100), deductions = pf + pt + tds;
   return { emp_id: emp.id, month, working_days: days, paid_days: round(paidDays), lop_days: round(fixedDays ? days - paidDays : lop),
@@ -96,4 +106,4 @@ function buildSlip({ emp, month, today, cfg, hols, dayOf, leaves = [], reimb = 0
     ot_hours: round(otHours), ot_pay: round(otPay), partial_hours: round(partialMin / 60), hourly_rate: round(hourly),
     deductions: round(deductions), net: round(gross - deductions + reimb + otPay) };
 }
-module.exports = { round, annualTax, structure, buildSlip, payDate, annualNet, ctcFromInhand, salaryBreakdown, resolveSalary };
+module.exports = { splitStructure, parseSplit, round, annualTax, structure, buildSlip, payDate, annualNet, ctcFromInhand, salaryBreakdown, resolveSalary };
